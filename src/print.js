@@ -65,7 +65,9 @@ function buildLayoutRequest(files, settings) {
     if (fileObj._xmlInvoice) return null;
     // Use _filePath as dedup key when available (more stable than previewUrl).
     // For OFD, fall back to previewUrl since _filePath is shared across pages.
-    var key = (fileObj.type !== 'ofd' && fileObj._filePath) ? fileObj._filePath : (fileObj.previewUrl || '');
+    // Enhanced files also key by previewUrl: same path may exist as both
+    // original (filePath branch) and enhanced (dataUrl branch) entries.
+    var key = (fileObj.type !== 'ofd' && fileObj._filePath && !fileObj._enhanced) ? fileObj._filePath : (fileObj.previewUrl || '');
     if (!key) return null;
     if (!(key in fileMap)) {
       fileMap[key] = fileSpecs.length;
@@ -84,7 +86,7 @@ function buildLayoutRequest(files, settings) {
         spec.sourceType = 'ofd-page';
         spec.dataUrl = fileObj.previewUrl || '';
         spec.filePath = null;
-      } else if (fileObj._filePath) {
+      } else if (fileObj._filePath && !fileObj._enhanced) {
         spec.filePath = fileObj._filePath;
         spec.dataUrl = ''; // not needed — Rust reads from file
         spec.sourceType = 'image';
@@ -113,7 +115,7 @@ function buildLayoutRequest(files, settings) {
   // Pre-calculate layout so we know slot dimensions
   var layout = calculateLayout(settings);
 
-  var perPage = settings.cols * settings.rows;
+  var perPage = getPerPage(settings);
   for (var i = 0; i < expanded.length; i++) {
     var slots = [];
     var pageFiles = expanded[i];
@@ -222,7 +224,7 @@ async function doPrint() {
 
 function showPrintConfirm(files, s) {
   var printerName = s.printerName || '默认打印机';
-  var layout = S.layout.rows + '\u00D7' + S.layout.cols;
+  var layout = s.reimburseMode ? ('报销单 ' + (s.reimburseHeight || 120) + 'mm 分段') : (S.layout.rows + '\u00D7' + S.layout.cols);
   var ps = document.getElementById('paperSize').value;
   var orient = document.getElementById('orientation').value === 'portrait' ? '纵向' : '横向';
   var paper = ps === 'custom' ? (s.paperW + '\u00D7' + s.paperH + 'mm') : ps.toUpperCase();
@@ -675,8 +677,8 @@ function fallbackPrint(files, s) {
   var pages = buildPages(files, s);
   var expanded = s.collate ? Array(s.copies).fill(pages).flat() : pages.flatMap(function(p) { return Array(s.copies).fill(p); });
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>发票酱</title><style>*{margin:0;padding:0;box-sizing:border-box}@page{size:' + s.paperW + 'mm ' + s.paperH + 'mm;margin:0}body{background:white}.page{width:' + s.paperW + 'mm;height:' + s.paperH + 'mm;position:relative;page-break-after:always;background:white;overflow:hidden}.slot{position:absolute;overflow:hidden;display:flex;align-items:center;justify-content:center}.slot img{max-width:100%;max-height:100%;object-fit:contain}';
-  // Add cut line styles if enabled
-  if (s.cutline) {
+  // Add cut line styles if enabled (reimburse mode always draws segment cut lines)
+  if (s.cutline || s.reimburseMode) {
     html += '.cutline-v{position:absolute;top:0;bottom:0;width:0;border-right:1px dashed #ccc}.cutline-h{position:absolute;left:0;right:0;height:0;border-bottom:1px dashed #ccc}';
   }
   html += '</style></head><body>';
@@ -684,10 +686,26 @@ function fallbackPrint(files, s) {
     html += '<div class="page">';
     var mt = s.marginTop, mb = s.marginBottom, ml = s.marginLeft, mr = s.marginRight;
     var fm = s.footerMargin || 0;
-    var slotW = (s.paperW - s.cols * (ml + mr) - (s.cols - 1) * s.gapH) / s.cols;
-    var slotH = (s.paperH - s.rows * (mt + mb) - (s.rows - 1) * s.gapV - fm) / s.rows;
+    var isReimb = !!s.reimburseMode;
+    var segMm = s.reimburseHeight || 120;
+    var segCount = isReimb ? Math.max(1, Math.floor(s.paperH / segMm)) : 0;
+    var effRows = isReimb ? segCount : s.rows;
+    var effCols = isReimb ? 1 : s.cols;
+    var slotW, slotH;
+    if (isReimb) {
+      // 报销单分段：段高固定，mt/mb 为段内安全边距，裁切线在段边界绝对位置
+      slotW = s.paperW - ml - mr;
+      slotH = Math.max(10, segMm - mt - mb);
+    } else {
+      slotW = (s.paperW - s.cols * (ml + mr) - (s.cols - 1) * s.gapH) / s.cols;
+      slotH = (s.paperH - s.rows * (mt + mb) - (s.rows - 1) * s.gapV - fm) / s.rows;
+    }
     // Draw cut lines (vertical + horizontal) between slots
-    if (s.cutline && (s.cols > 1 || s.rows > 1)) {
+    if (isReimb) {
+      for (var k = 1; k < segCount; k++) {
+        html += '<div class="cutline-h" style="top:' + (k * segMm) + 'mm"></div>';
+      }
+    } else if (s.cutline && (s.cols > 1 || s.rows > 1)) {
       var hasFb = s.pageNum || s.printDate || (s.footerText || '').trim();
       var vLineH = hasFb ? (s.paperH - fm) : s.paperH;
       for (var c = 1; c < s.cols; c++) {
@@ -699,9 +717,14 @@ function fallbackPrint(files, s) {
         html += '<div class="cutline-h" style="top:' + y + 'mm"></div>';
       }
     }
-    for (var r = 0; r < s.rows; r++) for (var c = 0; c < s.cols; c++) {
-      var f = page[r * s.cols + c];
-      var x = ml + c * (slotW + ml + mr + s.gapH), y = mt + r * (slotH + mt + mb + s.gapV);
+    for (var r = 0; r < effRows; r++) for (var c = 0; c < effCols; c++) {
+      var f = page[r * effCols + c];
+      var x, y;
+      if (isReimb) {
+        x = ml; y = r * segMm + mt;
+      } else {
+        x = ml + c * (slotW + ml + mr + s.gapH); y = mt + r * (slotH + mt + mb + s.gapV);
+      }
       if (f && f.previewUrl) {
         var src = S.feat.trimWhite && f.trimmedUrl ? f.trimmedUrl : f.previewUrl;
         // Compute effective rotation (same logic as layout.js getRotation)
@@ -728,7 +751,8 @@ function fallbackPrint(files, s) {
         if (perScale !== 1) transforms += 'scale(' + perScale + ') ';
         if (rot) transforms += 'rotate(' + rot + 'deg) ';
         var transformStyle = transforms ? 'transform:' + transforms + ';' : '';
-        html += '<div class="slot" style="left:' + x + 'mm;top:' + y + 'mm;width:' + slotW + 'mm;height:' + slotH + 'mm"><img src="' + escHtml(src) + '" style="' + sizeStyle + transformStyle + '"></div>';
+        var slotAlignStyle = isReimb ? 'align-items:flex-start;justify-content:flex-start;' : '';
+        html += '<div class="slot" style="left:' + x + 'mm;top:' + y + 'mm;width:' + slotW + 'mm;height:' + slotH + 'mm;' + slotAlignStyle + '"><img src="' + escHtml(src) + '" style="' + sizeStyle + transformStyle + '"></div>';
       }
     }
     // 文本位置：距页面底部 5mm 处（在页边距区域内）

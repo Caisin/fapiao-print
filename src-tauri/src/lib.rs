@@ -551,6 +551,22 @@ fn trim_image(data_url: String) -> Result<String, String> {
     Ok(format!("data:image/png;base64,{}", b64))
 }
 
+/// Enhance a faint/blurry invoice image (levels stretch + gamma + unsharp mask).
+/// Reads the original file at FULL resolution so print clarity is preserved —
+/// the preview thumbnail is never used as enhancement source.
+/// Returns enhanced JPEG data URL with EXIF orientation baked into pixels.
+///
+/// **Async command**: CPU-intensive pixel work runs on spawn_blocking,
+/// keeping the IPC thread free (same pattern as extract_pdf_text).
+#[command]
+async fn enhance_image(file_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pdf_engine::enhance_image(&file_path)
+    })
+    .await
+    .map_err(|e| format!("图片增强任务失败: {}", e))?
+}
+
 /// Generate PDF from layout request (files + pages + settings).
 /// Replaces JS `renderPageToCanvas` + `generate_pdf_from_pages`.
 /// Emits `pdf-progress` events to the frontend with { phase, current, total }.
@@ -1415,6 +1431,7 @@ pub fn run() {
         get_temp_dir,
         show_window,
         trim_image,
+        enhance_image,
         generate_pdf_from_layout,
         print_pdf_file,
         parse_ofd,
@@ -1453,6 +1470,7 @@ pub fn run() {
         get_temp_dir,
         show_window,
         trim_image,
+        enhance_image,
         generate_pdf_from_layout,
         print_pdf_file,
         parse_ofd,
