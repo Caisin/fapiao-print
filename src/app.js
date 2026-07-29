@@ -1916,6 +1916,7 @@ function updateAdjPanel() {
   document.getElementById('adjOffXN').value = f.slotOffsetX || 0;
   document.getElementById('adjOffY').value = f.slotOffsetY || 0;
   document.getElementById('adjOffYN').value = f.slotOffsetY || 0;
+  syncEnhanceBtn(f);
 }
 
 function onAdjScaleChange() {
@@ -1954,6 +1955,93 @@ function applySlotAdjToAll() {
   });
   updatePreview();
   toast('已应用到全部 ' + S.files.length + ' 张发票');
+}
+
+// =====================================================
+// Text Enhancement — 浅色/模糊图片发票增强（Rust 全分辨率处理）
+// =====================================================
+var ENHANCE_IMAGE_TYPES = ['jpg', 'jpeg', 'png', 'bmp', 'webp', 'tiff', 'tif'];
+
+/** 仅图片文件（有磁盘路径，走 Rust 原图处理）可增强；PDF/OFD/XML 不支持 */
+function canEnhanceFile(f) {
+  return !!(f && f._filePath && !f._xmlInvoice && ENHANCE_IMAGE_TYPES.indexOf(f.type) >= 0);
+}
+
+/** 单票调整面板「文本增强」开关：增强作用于原图全分辨率，打印清晰度不受影响 */
+function toggleTextEnhance() {
+  var f = getSelectedFileObj();
+  if (!canEnhanceFile(f) || f._enhancing) return;
+
+  // 已增强 → 还原原图
+  if (f._enhanced) {
+    f.previewUrl = f._origPreviewUrl;
+    f.img = f._origImg;
+    f._origPreviewUrl = '';
+    f._origImg = null;
+    f._enhanced = false;
+    f.trimmedUrl = null; // 白边缓存基于原图，需按还原后的图重算
+    updateAdjPanel();
+    updatePreview();
+    renderFileList();
+    if (S.feat.trimWhite) processTrim();
+    return;
+  }
+
+  f._enhancing = true;
+  updateAdjPanel();
+  invoke('enhance_image', { filePath: f._filePath }).then(function(dataUrl) {
+    var img = new Image();
+    img.onload = function() {
+      f._origPreviewUrl = f.previewUrl;
+      f._origImg = f.img;
+      f.previewUrl = dataUrl;
+      f.img = img;
+      // ow/oh 不变：增强不改动尺寸（EXIF 方向已在加载时与增强时一致烘焙）
+      f._enhanced = true;
+      f._enhancing = false;
+      f.trimmedUrl = null; // 白边缓存基于原图，需按增强后的图重算
+      updateAdjPanel();
+      updatePreview();
+      renderFileList();
+      if (S.feat.trimWhite) processTrim();
+      toast('已增强：' + f.name);
+    };
+    img.onerror = function() {
+      f._enhancing = false;
+      updateAdjPanel();
+      toast('增强结果加载失败');
+    };
+    img.src = dataUrl;
+  }).catch(function(e) {
+    f._enhancing = false;
+    updateAdjPanel();
+    toast('文本增强失败: ' + String(e));
+  });
+}
+
+/** 同步「文本增强」按钮状态（由 updateAdjPanel 调用） */
+function syncEnhanceBtn(f) {
+  var btn = document.getElementById('btnTextEnhance');
+  if (!btn) return;
+  if (!canEnhanceFile(f)) {
+    btn.disabled = true;
+    btn.classList.remove('btn-primary');
+    btn.textContent = '✨ 文本增强';
+    btn.title = '仅支持图片文件（PDF/OFD 内嵌图像暂不支持）';
+  } else if (f._enhancing) {
+    btn.disabled = true;
+    btn.classList.remove('btn-primary');
+    btn.textContent = '增强中…';
+  } else if (f._enhanced) {
+    btn.disabled = false;
+    btn.classList.add('btn-primary');
+    btn.textContent = '✓ 已增强（点击还原）';
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('btn-primary');
+    btn.textContent = '✨ 文本增强';
+    btn.title = '浅色/模糊图片发票：文字加深、边缘锐化（仅作用于图片文件，不影响原文件）';
+  }
 }
 
 /**

@@ -1053,6 +1053,108 @@ fn encode_raw_base64(bytes: &[u8], ext: &str) -> String {
 }
 
 // =====================================================
+// Text Enhancement — 浅色/模糊图片发票增强
+// =====================================================
+
+/// Enhance a faint/blurry invoice image: auto levels stretch + gamma + unsharp mask.
+/// Reads the ORIGINAL file from disk at full resolution (print clarity preserved),
+/// bakes EXIF orientation into pixels, returns enhanced JPEG data URL.
+///
+/// Algorithm (per-pixel LUT, preserves hue — red seals stay red):
+///   1. Luminance histogram → 1%/99% percentile clip points
+///   2. Levels stretch [lo, hi] → [0, 255] with gamma 1.4 (darkens midtones,
+///      turning faint gray text dark) — same LUT on all RGB channels
+///   3. Mild unsharp mask (sigma 1.0, amount 0.6, threshold 8) sharpens blurry
+///      edges without amplifying flat-area noise
+pub(crate) fn enhance_image(file_path: &str) -> Result<String, String> {
+    use base64::Engine;
+    use image::ImageEncoder;
+
+    let bytes = std::fs::read(file_path)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    let img = image::load_from_memory(&bytes)
+        .map_err(|e| format!("图片解码失败: {}", e))?;
+
+    // Bake EXIF orientation so enhanced output displays identically to source
+    // (browsers auto-rotate by EXIF; our JPEG output carries no EXIF tag).
+    let orient = if is_jpeg_bytes(&bytes) { read_exif_orientation(&bytes) } else { 1 };
+    let img = if orient != 1 { apply_exif_orientation(img, orient) } else { img };
+
+    let mut rgb = img.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    let total = (w as u64 * h as u64) as usize;
+    if total == 0 {
+        return Err("图片尺寸无效".to_string());
+    }
+
+    // 1. Luminance histogram (Rec.601 integer approximation)
+    let mut hist = [0u32; 256];
+    for px in rgb.pixels() {
+        let lum = (299 * px[0] as u32 + 587 * px[1] as u32 + 114 * px[2] as u32 + 500) / 1000;
+        hist[lum as usize] += 1;
+    }
+
+    // 2. Percentile clip points
+    let percentile = |p: f32| -> u8 {
+        let target = (total as f32 * p) as u32;
+        let mut acc = 0u32;
+        for (i, &c) in hist.iter().enumerate() {
+            acc += c;
+            if acc > target {
+                return i as u8;
+            }
+        }
+        255
+    };
+    let lo = percentile(0.01);
+    let hi = percentile(0.99);
+
+    // 3. Build LUT: levels stretch + gamma. Degenerate flat images (hi ≈ lo)
+    //    keep identity to avoid noise amplification.
+    let mut lut = [0u8; 256];
+    if hi > lo + 10 {
+        let gamma = 1.4f32;
+        let span = (hi - lo) as f32;
+        for (i, v) in lut.iter_mut().enumerate() {
+            let t = ((i as f32 - lo as f32) / span).clamp(0.0, 1.0);
+            *v = (255.0 * t.powf(gamma)).round() as u8;
+        }
+    } else {
+        for (i, v) in lut.iter_mut().enumerate() {
+            *v = i as u8;
+        }
+    }
+
+    for px in rgb.pixels_mut() {
+        px[0] = lut[px[0] as usize];
+        px[1] = lut[px[1] as usize];
+        px[2] = lut[px[2] as usize];
+    }
+
+    // 4. Unsharp mask: out = orig + amount * (orig - blur), gated by threshold
+    let blurred = image::imageops::blur(&rgb, 1.0);
+    const AMOUNT_PCT: i32 = 60;
+    const THRESHOLD: i32 = 8;
+    for (px, bp) in rgb.pixels_mut().zip(blurred.pixels()) {
+        for c in 0..3 {
+            let diff = px[c] as i32 - bp[c] as i32;
+            if diff.abs() > THRESHOLD {
+                px[c] = (px[c] as i32 + diff * AMOUNT_PCT / 100).clamp(0, 255) as u8;
+            }
+        }
+    }
+
+    // 5. Encode JPEG q92 (no EXIF — orientation already baked into pixels)
+    let mut buf: Vec<u8> = Vec::new();
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 92);
+    encoder
+        .write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("JPEG编码失败: {}", e))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    Ok(format!("data:image/jpeg;base64,{}", b64))
+}
+
+// =====================================================
 // PDF Generation from layout request (only remaining path)
 // =====================================================
 

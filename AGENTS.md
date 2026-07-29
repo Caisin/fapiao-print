@@ -57,6 +57,17 @@ npm run bump <版本号>    # 同步版本号到 Cargo.toml + tauri.conf.json
 - **忽略的设置**: rows/cols/gap/footerMargin 扣除/cutline 开关（UI 置灰，`syncReimburseUI()`）；S.layout 保持不变，关闭后原网格布局原样恢复
 - **页脚**: 页码/日期/页脚文字正常打印在纸底余量区（A4 = 57mm）
 
+### 文本增强 (v2.2.0+)
+
+浅色/模糊**图片**发票的一键增强（「单票调整」面板 `#btnTextEnhance`），纯本地处理，无远程 AI 接口。
+
+- **Rust**: `pdf_engine::enhance_image()` — 读**原图全分辨率**（非缩略图，保证打印清晰度）→ EXIF 烘焙 → 亮度直方图 1%/99% 百分位色阶拉伸 + gamma 1.4 + USM 锐化（sigma 1.0/amount 0.6/阈值 8 门控）→ JPEG q92 dataUrl；同一 LUT 应用 RGB 三通道（红章保色）；`hi<=lo+10` 退化图走恒等映射防噪点放大
+- **前端**: `toggleTextEnhance()`（app.js）— `f._enhanced` 标志 + `_origPreviewUrl/_origImg` 备份，可一键还原；`canEnhanceFile()` 限图片类型且有 `_filePath`（PDF/OFD/XML/浏览器模式不支持）；`syncEnhanceBtn()` 由 `updateAdjPanel()` 驱动按钮状态
+- **打印链路**: `buildLayoutRequest` 中 `_enhanced` 文件改走 dataUrl 分支（`filePath` 置 null），去重 key 同步改用 previewUrl（避免同路径文件一增强一原图互相污染）；增强 JPEG 无 EXIF → Rust 侧 `can_passthrough` 命中 `JpegPassthrough`
+- **白边裁剪联动**: 增强/还原时清 `f.trimmedUrl`，`S.feat.trimWhite` 开启时自动 `processTrim()` 重算
+- **ow/oh 不变**: 增强不改尺寸，EXIF 方向在加载与增强时一致烘焙
+- **Web 分支未移植**（web 无 `_filePath`，如需支持要另写 Canvas 版算法）
+
 ### PDF 渲染双引擎 (v1.9.10+)
 
 首选 **WinRT PDF**（系统组件）→ 失败时自动回退 **PDFium 渲染**

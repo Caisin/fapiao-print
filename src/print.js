@@ -65,7 +65,9 @@ function buildLayoutRequest(files, settings) {
     if (fileObj._xmlInvoice) return null;
     // Use _filePath as dedup key when available (more stable than previewUrl).
     // For OFD, fall back to previewUrl since _filePath is shared across pages.
-    var key = (fileObj.type !== 'ofd' && fileObj._filePath) ? fileObj._filePath : (fileObj.previewUrl || '');
+    // Enhanced files also key by previewUrl: same path may exist as both
+    // original (filePath branch) and enhanced (dataUrl branch) entries.
+    var key = (fileObj.type !== 'ofd' && fileObj._filePath && !fileObj._enhanced) ? fileObj._filePath : (fileObj.previewUrl || '');
     if (!key) return null;
     if (!(key in fileMap)) {
       fileMap[key] = fileSpecs.length;
@@ -84,7 +86,7 @@ function buildLayoutRequest(files, settings) {
         spec.sourceType = 'ofd-page';
         spec.dataUrl = fileObj.previewUrl || '';
         spec.filePath = null;
-      } else if (fileObj._filePath) {
+      } else if (fileObj._filePath && !fileObj._enhanced) {
         spec.filePath = fileObj._filePath;
         spec.dataUrl = ''; // not needed — Rust reads from file
         spec.sourceType = 'image';
