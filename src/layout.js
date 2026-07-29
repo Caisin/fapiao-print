@@ -4,13 +4,6 @@
 // Dependencies (global): S, MM2PX, PDF_RENDER_DPI, MIN_RENDER_PX
 
 /**
- * Unified layout calculation — pure function used by both preview and print rendering.
- * Returns slot positions, dimensions, and cut-line positions.
- * @param {Object} settings - From getSettings()
- * @param {number} pxPerMm - Pixels per mm (MM2PX for screen, PDF_RENDER_DPI/25.4 for print)
- * @returns {Object} Layout data with slots[], pw, ph, sw, sh, margins, cutLines
- */
-/**
  * Slots per page — reimburse mode: fixed-height segments, otherwise cols*rows.
  */
 function getPerPage(s) {
@@ -20,6 +13,13 @@ function getPerPage(s) {
   return s.cols * s.rows;
 }
 
+/**
+ * Unified layout calculation — pure function used by both preview and print rendering.
+ * Returns slot positions, dimensions, and cut-line positions.
+ * @param {Object} settings - From getSettings()
+ * @param {number} pxPerMm - Pixels per mm (MM2PX for screen, PDF_RENDER_DPI/25.4 for print)
+ * @returns {Object} Layout data with slots[], pw, ph, sw, sh, margins, cutLines
+ */
 function calculateLayout(settings, pxPerMm) {
   pxPerMm = pxPerMm || MM2PX;
 
