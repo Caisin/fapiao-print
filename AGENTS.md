@@ -45,6 +45,18 @@ npm run bump <版本号>    # 同步版本号到 Cargo.toml + tauri.conf.json
 - 打印四模式: PDF阅读器模式(默认) / 弹窗确认 / 静默打印PDFium(推荐) / 静默打印SumatraPDF
 - **PDF阅读器模式已知限制**: 通过 `ShellExecuteW` 委托系统默认 PDF 阅读器打印，`printto` 动词能否指定打印机取决于阅读器实现（Edge/Chrome 内置查看器不支持），多数情况下 fallback 到 `print` 动词使用默认打印机，**无法可靠控制打印机选择**
 
+### 报销单分段模式 (v2.2.0+)
+
+财务报销贴票场景：发票按固定段高（默认 120mm）纵向分段，段底强制裁切线，裁剪后直接贴报销单。
+
+- **开关**: `S.feat.reimburse`（`toggleReimburseMode`），段高 `reimburseHeight`（默认 120mm）
+- **JS 排版**: `layout.js calculateLayout()` reimburse 分支 — 单列 N 段（N = ⌊paperH ÷ seg⌋），slot = 段内区域（mt/mb 作段内上下安全边距，ml/mr 决定左右边界），cutLines 在 k×seg 绝对位置（不受边距影响，不画页脚线/竖线）
+- **每页 slot 数**: 统一走 `getPerPage(s)`，禁止再直接写 `cols * rows`（含 buildPages / buildLayoutRequest / 编号 / syncActiveFileFromPage 等所有分页计算点）
+- **左上对齐**: 三处渲染定位分支必须同步 — JS `renderPage`（wrapper left/top=0）、Rust `build_nup_content_stream` 与 `build_page_ops`（offset = slot 左上，`build_border_ops_lopdf`、水印定位同步跟随）；九宫格对齐 `setSlotAlignment` 基准同步切换为左上
+- **Rust**: `RenderSettings.reimburse_mode/reimburse_height`（serde default 向后兼容），`calculate_layout_mm` 分支镜像 JS 公式，裁切线走 `build_reimburse_cutline_ops_lopdf`（固定位置，不经 cutline 开关）
+- **忽略的设置**: rows/cols/gap/footerMargin 扣除/cutline 开关（UI 置灰，`syncReimburseUI()`）；S.layout 保持不变，关闭后原网格布局原样恢复
+- **页脚**: 页码/日期/页脚文字正常打印在纸底余量区（A4 = 57mm）
+
 ### PDF 渲染双引擎 (v1.9.10+)
 
 首选 **WinRT PDF**（系统组件）→ 失败时自动回退 **PDFium 渲染**

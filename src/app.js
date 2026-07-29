@@ -1672,7 +1672,7 @@ function clickFileItem(idx, event) {
 
   // Find which page this file is on
   var activeFiles = getActiveFiles();
-  var perPage = S.layout.cols * S.layout.rows;
+  var perPage = getPerPage(getSettings());
   var activeIdx = -1;
   for (var i = 0; i < activeFiles.length; i++) {
     if (activeFiles[i].id === f.id) { activeIdx = i; break; }
@@ -1699,7 +1699,7 @@ function updateActiveFileHighlight() {
 // Sync _activeFileIdx with current preview page (called from updatePreview)
 function syncActiveFileFromPage() {
   var activeFiles = getActiveFiles();
-  var perPage = S.layout.cols * S.layout.rows;
+  var perPage = getPerPage(getSettings());
   var pageStart = S.currentPage * perPage;
   if (pageStart < activeFiles.length) {
     // 若当前 _activeFileIdx 已在当前页范围内,保持不变(用户点击列表项时不应被覆盖)
@@ -1892,7 +1892,7 @@ function getSelectedFileObj() {
   if (S.selectedSlot < 0) return null;
   var files = getActiveFiles();
   var settings = getSettings();
-  var perPage = settings.cols * settings.rows;
+  var perPage = getPerPage(settings);
   var pageStart = S.currentPage * perPage;
   var fileIdx = pageStart + S.selectedSlot;
   return fileIdx < files.length ? files[fileIdx] : null;
@@ -2010,12 +2010,20 @@ function setSlotAlignment(alignH, alignV) {
   var gapX = (slotW_mm - containedW_mm * effectiveScale) / 2;
   var gapY = (slotH_mm - containedH_mm * effectiveScale) / 2;
 
-  // Offset to move wrapper from centered position to target alignment
+  // Offset to move wrapper from base position to target alignment.
+  // 常规模式基准=居中；报销单模式基准=左上（renderPage 中 wrapper 定位分支保持一致）。
   var offsetX = 0, offsetY = 0;
-  if (alignH === 'left')  offsetX = -gapX;
-  if (alignH === 'right') offsetX =  gapX;
-  if (alignV === 'top')   offsetY = -gapY;
-  if (alignV === 'bottom') offsetY =  gapY;
+  if (settings.reimburseMode) {
+    if (alignH === 'center') offsetX = gapX;
+    else if (alignH === 'right') offsetX = 2 * gapX;
+    if (alignV === 'center') offsetY = gapY;
+    else if (alignV === 'bottom') offsetY = 2 * gapY;
+  } else {
+    if (alignH === 'left')  offsetX = -gapX;
+    if (alignH === 'right') offsetX =  gapX;
+    if (alignV === 'top')   offsetY = -gapY;
+    if (alignV === 'bottom') offsetY =  gapY;
+  }
 
   f.slotOffsetX = Math.round(offsetX * 10) / 10;
   f.slotOffsetY = Math.round(offsetY * 10) / 10;
@@ -2216,6 +2224,8 @@ function getSettings() {
   if (document.getElementById('orientation').value === 'landscape') { var tmp = pw; pw = ph; ph = tmp; }
   return {
     paperW: pw, paperH: ph, cols: S.layout.cols, rows: S.layout.rows,
+    reimburseMode: !!S.feat.reimburse,
+    reimburseHeight: parseFloat(document.getElementById('reimburseHeight').value) || 120,
     marginTop: parseFloat(document.getElementById('marginTop').value),
     marginBottom: parseFloat(document.getElementById('marginBottom').value),
     marginLeft: parseFloat(document.getElementById('marginLeft').value),
@@ -2268,7 +2278,7 @@ function getActiveFiles() {
 }
 
 function buildPages(files, settings) {
-  var perPage = settings.cols * settings.rows;
+  var perPage = getPerPage(settings);
   var pages = [];
   for (var i = 0; i < files.length; i += perPage) pages.push(files.slice(i, i + perPage));
   return pages;
@@ -2283,7 +2293,7 @@ function updatePreview() {
   _saveTimer = setTimeout(saveSettings, 500);
   var files = getActiveFiles();
   document.getElementById('stFiles').textContent = S.files.filter(function(f) { return f.checked; }).length + ' 张';
-  document.getElementById('stLayout').textContent = S.layout.rows + '\u00D7' + S.layout.cols;
+  document.getElementById('stLayout').textContent = S.feat.reimburse ? '报销单' : (S.layout.rows + '×' + S.layout.cols);
   var ps = document.getElementById('paperSize').value;
   document.getElementById('stPaper').textContent = ps + ' ' + (document.getElementById('orientation').value === 'portrait' ? '纵' : '横');
 
@@ -2408,8 +2418,9 @@ function saveSettings() {
     printerName: document.getElementById('printerSel').value || null,
     feat: {}
   };
-  var featKeys = ['cutline','number','border','trimWhite','watermark','collate','duplex','pageNum','printDate','footer','autoOpenPdf','customFM','slotAdjMemory','fileListMemory'];
+  var featKeys = ['cutline','number','border','trimWhite','watermark','collate','duplex','pageNum','printDate','footer','autoOpenPdf','customFM','slotAdjMemory','fileListMemory','reimburse'];
   featKeys.forEach(function(k) { o.feat[k] = S.feat[k]; });
+  o.reimburseHeight = document.getElementById('reimburseHeight').value;
   // Save per-file slot adjustments when memory is enabled
   if (S.feat.slotAdjMemory) {
     var adjMap = {};
@@ -2508,7 +2519,8 @@ function loadSettings() {
       duplex: 'toggleDuplex', pageNum: 'togglePageNum', printDate: 'toggleDate',
       footer: 'toggleFooter', autoOpenPdf: 'toggleAutoOpenPdf', customFM: 'toggleCustomFM',
       slotAdjMemory: 'toggleSlotAdjMemory',
-      fileListMemory: 'toggleFileListMemory'
+      fileListMemory: 'toggleFileListMemory',
+      reimburse: 'toggleReimburse'
     };
     Object.keys(featMap).forEach(function(k) {
       if (o.feat[k] != null) {
@@ -2543,6 +2555,8 @@ function loadSettings() {
     document.getElementById('footerMargin').value = o.footerMargin;
     document.getElementById('footerMarginN').value = o.footerMargin;
   }
+  if (o.reimburseHeight != null) document.getElementById('reimburseHeight').value = o.reimburseHeight;
+  syncReimburseUI();
   // Restore summary table column selection
   if (o.summaryCols && Array.isArray(o.summaryCols) && o.summaryCols.length > 0) {
     _summaryActiveCols = o.summaryCols;
@@ -2577,6 +2591,29 @@ function togglePref(k, btn) {
     try { localStorage.setItem('ticketchan-pdf-text-enabled', S.feat[k] ? '1' : '0'); } catch(e) {}
   }
   saveSettings();
+}
+
+// 报销单分段模式开关：开启后忽略网格/行列/间距/裁切线开关，
+// 按固定段高纵向分段，段边界处强制绘制裁切线
+function toggleReimburseMode(btn) {
+  S.feat.reimburse = !S.feat.reimburse;
+  btn.classList.toggle('on', S.feat.reimburse);
+  syncReimburseUI();
+  saveSettings();
+  updatePreview();
+}
+
+// 同步报销单模式相关 UI 状态（选项显隐 + 网格/间距/裁切线控件置灰）
+function syncReimburseUI() {
+  var on = !!S.feat.reimburse;
+  document.getElementById('reimburseOpts').style.display = on ? 'block' : 'none';
+  ['gridSel', 'customLayoutRow', 'gapSec', 'cutlineRow'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) {
+      el.style.opacity = on ? '0.4' : '';
+      el.style.pointerEvents = on ? 'none' : '';
+    }
+  });
 }
 
 function toggleFileListMemory(btn) {
@@ -2639,7 +2676,7 @@ function exportSettings() {
 function resetSettings() {
   if (!confirm('确认恢复所有默认设置？')) return;
   S.layout = { cols: 1, rows: 1 };
-  S.feat = { cutline: true, number: false, border: false, trimWhite: false, watermark: false, footer: false, customFM: false, collate: true, duplex: false, pageNum: false, printDate: false, autoOpenPdf: true, ocrEnabled: false, pdfTextEnabled: true, slotAdjMemory: false, fileListMemory: false };
+  S.feat = { cutline: true, number: false, border: false, trimWhite: false, watermark: false, footer: false, customFM: false, collate: true, duplex: false, pageNum: false, printDate: false, autoOpenPdf: true, ocrEnabled: false, pdfTextEnabled: true, slotAdjMemory: false, fileListMemory: false, reimburse: false };
   S.ocrPrecision = 'standard';
   S.viewZoom = 0;
   document.getElementById('paperSize').value = 'A4';
@@ -2684,6 +2721,9 @@ function resetSettings() {
   document.getElementById('togglePdfText').classList.add('on');
   document.getElementById('toggleFooter').classList.remove('on');
   document.getElementById('toggleCustomFM').classList.remove('on');
+  document.getElementById('toggleReimburse').classList.remove('on');
+  document.getElementById('reimburseHeight').value = 120;
+  syncReimburseUI();
   document.getElementById('footerOpts').style.display = 'none';
   document.getElementById('customFMRow').style.display = 'none';
   document.getElementById('footerMarginRow').style.display = 'none';

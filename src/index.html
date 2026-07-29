@@ -91,7 +91,7 @@
             <div class="go" data-cols="2" data-rows="2" onclick="setLayoutPreset(2,2,null,this)">2×2</div>
             <div class="go" data-cols="3" data-rows="3" onclick="setLayoutPreset(3,3,null,this)">3×3</div>
           </div>
-          <div class="row" style="margin-top:4px;margin-bottom:0">
+          <div class="row" id="customLayoutRow" style="margin-top:4px;margin-bottom:0">
             <label class="lbl" style="font-size:12px;color:var(--text-muted)">自定义</label>
             <div style="display:flex;gap:4px;align-items:center;flex:1">
               <input type="number" id="customRows" value="1" min="1" max="10" style="width:52px;text-align:center" oninput="applyCustomLayout()" onchange="applyCustomLayout()">
@@ -99,6 +99,10 @@
               <input type="number" id="customCols" value="1" min="1" max="10" style="width:52px;text-align:center" oninput="applyCustomLayout()" onchange="applyCustomLayout()">
               <span style="color:var(--text-muted);font-size:13px">列</span>
             </div>
+          </div>
+          <div class="trow" style="margin-top:6px"><label class="tlbl">报销单模式</label><button class="tgl" id="toggleReimburse" onclick="toggleReimburseMode(this)"></button></div>
+          <div id="reimburseOpts" style="display:none">
+            <div class="row"><label class="lbl">分段高度</label><div class="ctrl" style="display:flex;gap:4px;align-items:center"><input type="number" id="reimburseHeight" value="120" min="50" max="297" step="1" style="width:64px;text-align:center" onchange="updatePreview()"><span style="color:var(--text-muted);font-size:12px">mm，发票左上对齐，段底打印裁切线</span></div></div>
           </div>
         </div>
         <div class="sec">
@@ -113,7 +117,7 @@
             <button class="btn btn-sm" style="flex:1" onclick="setMP(0,0,0,0)">0</button>
           </div>
         </div>
-        <div class="sec">
+        <div class="sec" id="gapSec">
           <div class="sec-title">↔ 间距 (mm)</div>
           <div class="row"><label class="lbl">列间距</label><div class="rr ctrl"><input type="range" id="gapH" min="0" max="20" value="3" oninput="syncSlider(this,'gapHN');updatePreview()"><input type="number" id="gapHN" min="0" max="20" value="3" style="width:64px" onchange="syncRange(this,'gapH');updatePreview()"></div></div>
           <div class="row"><label class="lbl">行间距</label><div class="rr ctrl"><input type="range" id="gapV" min="0" max="20" value="3" oninput="syncSlider(this,'gapVN');updatePreview()"><input type="number" id="gapVN" min="0" max="20" value="3" style="width:64px" onchange="syncRange(this,'gapV');updatePreview()"></div></div>
@@ -130,7 +134,7 @@
         </div>
         <div class="sec">
           <div class="sec-title">✂ 辅助选项</div>
-          <div class="trow"><label class="tlbl">裁切线</label><button class="tgl on" id="toggleCutline" onclick="toggleFeature('cutline',this)"></button></div>
+          <div class="trow" id="cutlineRow"><label class="tlbl">裁切线</label><button class="tgl on" id="toggleCutline" onclick="toggleFeature('cutline',this)"></button></div>
           <div class="trow"><label class="tlbl">编号</label><button class="tgl" id="toggleNumber" onclick="toggleFeature('number',this)"></button></div>
           <div class="trow"><label class="tlbl">边框</label><button class="tgl" id="toggleBorder" onclick="toggleFeature('border',this)"></button></div>
           <div class="trow"><label class="tlbl">裁剪白边</label><button class="tgl" id="toggleTrimWhite" onclick="toggleFeature('trimWhite',this)"></button></div>

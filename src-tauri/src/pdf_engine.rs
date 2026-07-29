@@ -3340,6 +3340,12 @@ pub struct RenderSettings {
     pub footer_text: Option<String>,
     pub footer_margin: f32,
     pub custom_fm: bool,
+    /// 报销单分段模式：固定段高纵向分段，段边界强制裁切线，发票左上对齐
+    #[serde(default)]
+    pub reimburse_mode: bool,
+    /// 分段高度（mm），默认 120
+    #[serde(default)]
+    pub reimburse_height: Option<f32>,
     #[serde(default)]
     pub copies: u32,
     #[serde(default)]
@@ -3439,6 +3445,26 @@ fn calculate_layout_mm(settings: &RenderSettings) -> (Vec<LayoutSlotMm>, f32, f3
     let gv = settings.gap_v;
     let cols = settings.cols as f32;
     let rows = settings.rows as f32;
+
+    // 报销单分段模式：段高固定（默认120mm），段边界 = k×seg（top-down 绝对位置）。
+    // mt/mb 仅作段内上下安全边距，ml/mr 决定发票区域左右边界。
+    // 忽略 rows/cols/gap/footerMargin，与 JS 端 calculateLayout 的 reimburse 分支保持一致。
+    if settings.reimburse_mode {
+        let seg = settings.reimburse_height.unwrap_or(120.0).max(10.0);
+        let seg_count = ((ph / seg).floor() as usize).max(1);
+        let sw = pw - ml - mr;
+        let sh = (seg - mt - mb).max(10.0);
+        let mut slots = Vec::new();
+        for i in 0..seg_count {
+            // top-down 段区间 [i*seg, (i+1)*seg]，发票区域 [i*seg+mt, (i+1)*seg-mb]
+            // bottom-up: y = ph - top_down_top - sh
+            let top_down_top = i as f32 * seg + mt;
+            let y_mm = ph - top_down_top - sh;
+            slots.push(LayoutSlotMm { x_mm: ml, y_mm, w_mm: sw, h_mm: sh });
+        }
+        log::info!("calculate_layout_mm [reimburse]: pw={pw} ph={ph} seg={seg} count={seg_count} sw={sw} sh={sh}");
+        return (slots, pw, ph);
+    }
 
     // The fm area is reserved purely for footer text below all rows.
     // Only deduct footer margin from slot height when there is footer content.
@@ -4179,13 +4205,19 @@ fn build_page_ops(
             scale_y *= per_scale;
         }
 
-        // Centered position in slot (bottom-left origin)
+        // Centered position in slot (bottom-left origin).
+        // 报销单模式：左上对齐；常规模式：居中。
         let draw_w_mm = iw_mm * scale_x;
         let draw_h_mm = ih_mm * scale_y;
-        let mut offset_x_mm = slot_positions[slot_idx].x_mm
-            + (slot_positions[slot_idx].w_mm - draw_w_mm) / 2.0;
-        let mut offset_y_mm = slot_positions[slot_idx].y_mm
-            + (slot_positions[slot_idx].h_mm - draw_h_mm) / 2.0;
+        let mut offset_x_mm = slot_positions[slot_idx].x_mm;
+        let mut offset_y_mm = if settings.reimburse_mode {
+            slot_positions[slot_idx].y_mm + (slot_positions[slot_idx].h_mm - draw_h_mm)
+        } else {
+            slot_positions[slot_idx].y_mm + (slot_positions[slot_idx].h_mm - draw_h_mm) / 2.0
+        };
+        if !settings.reimburse_mode {
+            offset_x_mm += (slot_positions[slot_idx].w_mm - draw_w_mm) / 2.0;
+        }
 
         // Per-slot offset override
         let per_ox = slot_spec.offset_x.unwrap_or(0.0);
@@ -5140,11 +5172,20 @@ fn build_nup_content_stream(
             scale_y *= adj.scale;
         }
 
-        // Centered position in slot (bottom-left origin) based on visual dimensions
+        // Centered position in slot (bottom-left origin) based on visual dimensions.
+        // 报销单模式：左上对齐（贴段内区域左上角）；常规模式：居中。
         let draw_w = vis_w * scale_x;
         let draw_h = vis_h * scale_y;
-        let mut offset_x = slot.x_mm * MM_TO_PT + (slot_w_pt - draw_w) / 2.0;
-        let mut offset_y = slot.y_mm * MM_TO_PT + (slot_h_pt - draw_h) / 2.0;
+        let mut offset_x = slot.x_mm * MM_TO_PT;
+        let mut offset_y = if settings.reimburse_mode {
+            // bottom-up 坐标：顶部对齐 = slot 顶边 - 图像高度
+            slot.y_mm * MM_TO_PT + (slot_h_pt - draw_h)
+        } else {
+            slot.y_mm * MM_TO_PT + (slot_h_pt - draw_h) / 2.0
+        };
+        if !settings.reimburse_mode {
+            offset_x += (slot_w_pt - draw_w) / 2.0;
+        }
 
         // Per-slot offset override (convert mm to pt)
         if adj.offset_x != 0.0 { offset_x += adj.offset_x * MM_TO_PT; }
@@ -5695,7 +5736,8 @@ fn generate_pdf_passthrough(
         // Add slot numbers if enabled
         if request.settings.number {
             log::info!("lopdf hybrid: page {} adding slot numbers", page_idx);
-            let start_num = page_idx * request.settings.cols as usize * request.settings.rows as usize + 1;
+            // slot_positions.len() = 实际每页 slot 数（常规 = rows*cols，报销单 = 分段数）
+            let start_num = page_idx * slot_positions.len() + 1;
             let num_images = render_slot_numbers(&text_font, &slot_positions, start_num);
             // Only add numbers for filled slots, matched by index
             for slot_idx in filled_slot_indices.iter() {
@@ -5824,8 +5866,46 @@ fn generate_pdf_passthrough(
                                 let slot = &slot_positions[slot_idx];
                                 let img_w_pt = w as f32 * 72.0 / RENDER_DPI as f32;
                                 let img_h_pt = h as f32 * 72.0 / RENDER_DPI as f32;
-                                let x_pt = slot.x_mm * MM_TO_PT + (slot.w_mm * MM_TO_PT - img_w_pt) / 2.0;
-                                let y_pt = slot.y_mm * MM_TO_PT + (slot.h_mm * MM_TO_PT - img_h_pt) / 2.0;
+                                let mut x_pt = slot.x_mm * MM_TO_PT + (slot.w_mm * MM_TO_PT - img_w_pt) / 2.0;
+                                let mut y_pt = slot.y_mm * MM_TO_PT + (slot.h_mm * MM_TO_PT - img_h_pt) / 2.0;
+
+                                // 报销单模式：发票左上对齐，水印须跟随图像中心而非 slot 中心，
+                                // 定位公式与 build_nup_content_stream 的 reimburse 分支一致
+                                if request.settings.reimburse_mode {
+                                    if let Some(fx_pos) = page_form_xobjs.iter().position(|(idx, _, _, _)| *idx == slot_idx) {
+                                        let (_, _, src_w_pt, src_h_pt) = &page_form_xobjs[fx_pos];
+                                        let adj = slot_adjustments.get(fx_pos);
+                                        let rot = adj.map(|a| ((a.rotation % 360) + 360) % 360).unwrap_or(0);
+                                        let (vis_w, vis_h) = if rot == 90 || rot == 270 { (*src_h_pt, *src_w_pt) } else { (*src_w_pt, *src_h_pt) };
+                                        let slot_w_pt = slot.w_mm * MM_TO_PT;
+                                        let slot_h_pt = slot.h_mm * MM_TO_PT;
+                                        let (mut scx, mut scy) = match request.settings.fit_mode.as_str() {
+                                            "fill" => (slot_w_pt / vis_w, slot_h_pt / vis_h),
+                                            "original" => (1.0, 1.0),
+                                            "custom" => {
+                                                let c = (slot_w_pt / vis_w).min(slot_h_pt / vis_h) * request.settings.custom_scale;
+                                                (c, c)
+                                            }
+                                            _ => {
+                                                let c = (slot_w_pt / vis_w).min(slot_h_pt / vis_h);
+                                                (c, c)
+                                            }
+                                        };
+                                        if let Some(a) = adj {
+                                            if a.scale != 1.0 { scx *= a.scale; scy *= a.scale; }
+                                        }
+                                        let draw_w = vis_w * scx;
+                                        let draw_h = vis_h * scy;
+                                        let mut ox = slot.x_mm * MM_TO_PT;
+                                        let mut oy = slot.y_mm * MM_TO_PT + (slot_h_pt - draw_h);
+                                        if let Some(a) = adj {
+                                            if a.offset_x != 0.0 { ox += a.offset_x * MM_TO_PT; }
+                                            if a.offset_y != 0.0 { oy -= a.offset_y * MM_TO_PT; }
+                                        }
+                                        x_pt = ox + (draw_w - img_w_pt) / 2.0;
+                                        y_pt = oy + (draw_h - img_h_pt) / 2.0;
+                                    }
+                                }
 
                                 use lopdf::content::Operation;
                                 let name = format!("Wm{}", page_idx * 100 + slot_idx);
@@ -5864,7 +5944,10 @@ fn generate_pdf_passthrough(
         }
 
         // Add cut lines if enabled
-        if request.settings.cutline {
+        // 报销单模式：段边界绝对位置（k×段高）强制裁切线，不受 cutline 开关与边距影响
+        let cutline_content = if request.settings.reimburse_mode {
+            build_reimburse_cutline_ops_lopdf(pw_pt, ph_pt, request.settings.reimburse_height.unwrap_or(120.0))
+        } else if request.settings.cutline {
             // Calculate footer cut line position
             let has_footer = request.settings.page_num || request.settings.print_date || request.settings.footer_text.as_ref().map_or(false, |t| !t.is_empty());
             let footer_cutline_y_pt = if has_footer {
@@ -5882,16 +5965,19 @@ fn generate_pdf_passthrough(
             } else {
                 None
             };
-            if let Some(cutline_ops) = build_cutline_ops_lopdf(&slot_positions, pw_pt, ph_pt, footer_cutline_y_pt) {
-                if !content_bytes.is_empty() {
-                    content_bytes.push(b'\n');
-                }
-                if let Ok(cutline_bytes) = cutline_ops.encode() {
-                    content_bytes.extend_from_slice(&cutline_bytes);
-                    log::info!("lopdf hybrid: page {} cut lines added", page_idx);
-                } else {
-                    log::warn!("lopdf hybrid: page {} cut line encode failed", page_idx);
-                }
+            build_cutline_ops_lopdf(&slot_positions, pw_pt, ph_pt, footer_cutline_y_pt)
+        } else {
+            None
+        };
+        if let Some(cutline_ops) = cutline_content {
+            if !content_bytes.is_empty() {
+                content_bytes.push(b'\n');
+            }
+            if let Ok(cutline_bytes) = cutline_ops.encode() {
+                content_bytes.extend_from_slice(&cutline_bytes);
+                log::info!("lopdf hybrid: page {} cut lines added", page_idx);
+            } else {
+                log::warn!("lopdf hybrid: page {} cut line encode failed", page_idx);
             }
         }
 
@@ -5985,6 +6071,54 @@ fn generate_pdf_passthrough(
     }
 
     Ok(())
+}
+
+/// Build PDF operations for reimburse-mode cut lines: horizontal dashed lines
+/// at fixed segment boundaries (k × seg_height from page top, absolute position).
+/// Coordinate system: PDF content stream is bottom-up, so line k is at ph - k*seg.
+/// Returns None when fewer than 2 segments fit on the page (no interior boundary).
+fn build_reimburse_cutline_ops_lopdf(
+    page_w_pt: f32,
+    page_h_pt: f32,
+    seg_height_mm: f32,
+) -> Option<lopdf::content::Content> {
+    use lopdf::content::Operation;
+
+    let seg = seg_height_mm.max(10.0);
+    let ph_mm = page_h_pt / MM_TO_PT;
+    let seg_count = ((ph_mm / seg).floor() as usize).max(1);
+    if seg_count < 2 {
+        return None;
+    }
+
+    let mut ops = Vec::new();
+    ops.push(Operation { operator: "q".into(), operands: vec![] });
+    ops.push(Operation { operator: "w".into(), operands: vec![lopdf::Object::Real(0.5)] });
+    ops.push(Operation { operator: "d".into(), operands: vec![
+        lopdf::Object::Array(vec![
+            lopdf::Object::Integer(3),
+            lopdf::Object::Integer(3),
+        ]),
+        lopdf::Object::Integer(0),
+    ]});
+    ops.push(Operation { operator: "G".into(), operands: vec![lopdf::Object::Real(0.0)] });
+
+    for k in 1..seg_count {
+        // top-down k*seg → bottom-up ph - k*seg
+        let y = page_h_pt - k as f32 * seg * MM_TO_PT;
+        ops.push(Operation { operator: "m".into(), operands: vec![
+            lopdf::Object::Real(0.0),
+            lopdf::Object::Real(y),
+        ]});
+        ops.push(Operation { operator: "l".into(), operands: vec![
+            lopdf::Object::Real(page_w_pt),
+            lopdf::Object::Real(y),
+        ]});
+        ops.push(Operation { operator: "S".into(), operands: vec![] });
+    }
+
+    ops.push(Operation { operator: "Q".into(), operands: vec![] });
+    Some(lopdf::content::Content { operations: ops })
 }
 
 /// Build PDF operations to draw cut lines (dashed lines at slot boundaries).
@@ -6192,11 +6326,19 @@ fn build_border_ops_lopdf(
             scale_y *= adj.scale;
         }
 
-        // Calculate visual boundary (bottom-up coordinates, PDF standard)
+        // Calculate visual boundary (bottom-up coordinates, PDF standard).
+        // 报销单模式：左上对齐；常规模式：居中（与 build_nup_content_stream 保持一致）。
         let draw_w = vis_w * scale_x;
         let draw_h = vis_h * scale_y;
-        let mut offset_x = slot.x_mm * MM_TO_PT + (slot_w_pt - draw_w) / 2.0;
-        let mut offset_y = slot.y_mm * MM_TO_PT + (slot_h_pt - draw_h) / 2.0;
+        let mut offset_x = slot.x_mm * MM_TO_PT;
+        let mut offset_y = if settings.reimburse_mode {
+            slot.y_mm * MM_TO_PT + (slot_h_pt - draw_h)
+        } else {
+            slot.y_mm * MM_TO_PT + (slot_h_pt - draw_h) / 2.0
+        };
+        if !settings.reimburse_mode {
+            offset_x += (slot_w_pt - draw_w) / 2.0;
+        }
 
         // Per-slot offset override
         if adj.offset_x != 0.0 { offset_x += adj.offset_x * MM_TO_PT; }

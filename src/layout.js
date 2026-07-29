@@ -10,6 +10,16 @@
  * @param {number} pxPerMm - Pixels per mm (MM2PX for screen, PDF_RENDER_DPI/25.4 for print)
  * @returns {Object} Layout data with slots[], pw, ph, sw, sh, margins, cutLines
  */
+/**
+ * Slots per page — reimburse mode: fixed-height segments, otherwise cols*rows.
+ */
+function getPerPage(s) {
+  if (s.reimburseMode) {
+    return Math.max(1, Math.floor(s.paperH / (s.reimburseHeight || 120)));
+  }
+  return s.cols * s.rows;
+}
+
 function calculateLayout(settings, pxPerMm) {
   pxPerMm = pxPerMm || MM2PX;
 
@@ -22,6 +32,30 @@ function calculateLayout(settings, pxPerMm) {
   var mr = settings.marginRight * pxPerMm;
   var gh = settings.gapH * pxPerMm;
   var gv = settings.gapV * pxPerMm;
+
+  // 报销单分段模式：固定段高（默认120mm），裁切线位于段边界绝对位置（k×段高），
+  // 不受任何边距影响；mt/mb 仅作为段内上下安全边距，ml/mr 决定发票区域左右边界。
+  // 忽略 rows/cols/gap/footerMargin；裁切线强制绘制（本模式的核心目的）。
+  if (settings.reimburseMode) {
+    var segMm = settings.reimburseHeight || 120;
+    var segCount = Math.max(1, Math.floor(settings.paperH / segMm));
+    var rsw = pw - ml - mr;
+    var rsh = Math.max(10 * pxPerMm, (segMm - settings.marginTop - settings.marginBottom) * pxPerMm);
+    var rSlots = [];
+    for (var si = 0; si < segCount; si++) {
+      rSlots.push({
+        row: si, col: 0,
+        x: ml,
+        y: (si * segMm + settings.marginTop) * pxPerMm,
+        w: rsw, h: rsh
+      });
+    }
+    var rCutLines = [];
+    for (var k = 1; k < segCount; k++) {
+      rCutLines.push({ type: 'horizontal', pos: k * segMm * pxPerMm });
+    }
+    return { pw: pw, ph: ph, mt: mt, mb: mb, fm: fm, ml: ml, mr: mr, gh: gh, gv: gv, sw: rsw, sh: rsh, slots: rSlots, cutLines: rCutLines, reimburse: true };
+  }
 
   // The fm area is reserved purely for footer text below all rows.
   // Only deduct footer margin from slot height when there is footer content.
@@ -167,17 +201,22 @@ function renderPage(pageFiles, pi, total, s) {
         containedH = imgObjH * fitScale;
       }
       // Image wrapper: explicit dimensions, same transforms, optional border
+      // 报销单模式：左上对齐（贴段内区域左上角），常规模式：居中
       var wrapperStyle = 'width:' + containedW.toFixed(1) + 'px;height:' + containedH.toFixed(1) + 'px;';
       wrapperStyle += 'position:absolute;';
-      wrapperStyle += 'left:' + ((imgW - containedW) / 2).toFixed(1) + 'px;';
-      wrapperStyle += 'top:' + ((imgH - containedH) / 2).toFixed(1) + 'px;';
+      if (layout.reimburse) {
+        wrapperStyle += 'left:0;top:0;';
+      } else {
+        wrapperStyle += 'left:' + ((imgW - containedW) / 2).toFixed(1) + 'px;';
+        wrapperStyle += 'top:' + ((imgH - containedH) / 2).toFixed(1) + 'px;';
+      }
       wrapperStyle += 'transform-origin:center center;';
       if (transforms) wrapperStyle += 'transform:' + transforms + ';';
       if (s.border) wrapperStyle += 'outline:1px solid #000;outline-offset:-1px;';
       // Image fills wrapper
       var imgStyle = 'width:100%;height:100%;object-fit:' + fit + ';' + filt;
       inner = '<div style="' + wrapperStyle + '"><img src="' + src + '" style="' + imgStyle + '"></div>';
-      if (s.number) inner += '<div class="slot-num">' + (pi * s.rows * s.cols + i + 1) + '</div>';
+      if (s.number) inner += '<div class="slot-num">' + (pi * getPerPage(s) + i + 1) + '</div>';
       if (s.watermark && s.watermarkText) {
         var ws = s.watermarkSize * MM2PX * scale;
         inner += '<div class="watermark" style="color:' + s.watermarkColor + ';opacity:' + s.watermarkOpacity + ';font-size:' + ws + 'px;transform:translate(-50%,-50%) rotate(' + s.watermarkAngle + 'deg);top:50%;left:50%">' + s.watermarkText + '</div>';
@@ -297,7 +336,7 @@ function onSlotMouseDown(e) {
   var files = getActiveFiles();
   var settings = getSettings();
   var layout = calculateLayout(settings);
-  var perPage = settings.cols * settings.rows;
+  var perPage = getPerPage(settings);
   var fileIdx = S.currentPage * perPage + idx;
   var f = fileIdx < files.length ? files[fileIdx] : null;
   if (!f) return;
@@ -329,7 +368,7 @@ function startResize(e, idx, slotEl, corner) {
   var files = getActiveFiles();
   var settings = getSettings();
   var layout = calculateLayout(settings);
-  var perPage = settings.cols * settings.rows;
+  var perPage = getPerPage(settings);
   var fileIdx = S.currentPage * perPage + idx;
   var f = fileIdx < files.length ? files[fileIdx] : null;
   if (!f) return;
