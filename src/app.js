@@ -3074,6 +3074,13 @@ document.getElementById('orientation').value = 'landscape';
   } catch(e) {}
 })();
 
+// Defaults for summary/rename — MUST be initialized before loadSettings()
+// (var hoisting: declaration hoists but assignment does not; a later
+// `var x = default` would overwrite the value restored by loadSettings)
+var _summaryActiveCols = []; // keys of currently visible columns
+var _renameTemplate = ['amountTax', 'sellerName', 'invoiceNo'];
+var _renameSeparator = '_';
+
 // Restore all layout & feature settings
 loadSettings();
 
@@ -3293,7 +3300,6 @@ var SUMMARY_FIELDS = [
   { key: 'note',      label: '备注',      type: 'text',    default: true, editable: true }
 ];
 
-var _summaryActiveCols = []; // keys of currently visible columns
 var _summaryOriginalData = []; // snapshot of original values when modal opens
 
 function openSummaryModal() {
@@ -3602,8 +3608,6 @@ function csvEscape(val) {
 // =====================================================
 // Batch File Rename (v2.0.5)
 // =====================================================
-var _renameTemplate = ['amountTax', 'sellerName', 'invoiceNo'];
-var _renameSeparator = '_';
 var _renamePreview = [];
 
 var RENAME_FIELDS = [
