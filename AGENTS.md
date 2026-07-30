@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-- **版本**: v2.2.0
+- **版本**: v2.2.1
 - **技术栈**: Tauri 2.x (Rust) + 原生 HTML/CSS/JS（无框架）
 - **前端**: `src/{index.html, styles.css, ocr.js, layout.js, print.js, app.js}`
 - **后端**: `src-tauri/src/{main.rs, lib.rs, pdf_engine.rs, pdfium_print.rs}`
@@ -235,9 +235,10 @@ Rust `extract_pdf_text()` 解析 lopdf content stream，前端 `applyPdfTextResu
 关闭软件后自动记住用户设置，下次打开自动恢复。
 
 - **统一入口**: `saveSettings()` / `loadSettings()` — `ticketchan-settings` JSON 存储
-- **覆盖范围**: 排版布局、纸张、边距、缩放、旋转、份数、颜色、打印模式、辅助开关、水印、页脚、下边距
+- **覆盖范围**: 排版布局、纸张、边距、缩放、旋转、份数、颜色、打印模式、辅助开关、水印、页脚、下边距、汇总表勾选、重命名模板/分隔符
 - **防抖保存**: `updatePreview()` 500ms 防抖自动触发 `saveSettings()`
 - **恢复默认**: 清除所有持久化数据
+- **⚠️ var 提升坑 (v2.2.1 修复)**：`loadSettings()` 在脚本加载时同步调用，所有被它恢复的 JS 变量（非 DOM）的 `var x = 默认值` 声明**必须**位于 `loadSettings()` 调用之前，否则赋值会覆盖恢复值（声明提升，赋值不提升）。曾导致汇总表勾选/重命名模板重启后丢失（issue #7）
 
 ### 金额校验可视化 (v1.10.4)
 
