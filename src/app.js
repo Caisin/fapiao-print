@@ -2122,6 +2122,7 @@ function buildLineItemsHtml(items) {
 }
 
 var _invoiceDetailRelatedRecords = [];
+var _invoiceReviewZoom = 1;
 
 function getInvoiceFilePath(fileObj) {
   if (!fileObj) return '';
@@ -2163,6 +2164,31 @@ function buildDuplicateFilesHtml(fileObj) {
   }).join('');
   return '<div class="invoice-duplicate-section"><div class="invoice-detail-title">同号关联文件 <span>' +
     _invoiceDetailRelatedRecords.length + ' 个其它文件</span></div>' + rows + '</div>';
+}
+
+function buildInvoicePreviewHtml(fileObj) {
+  var previewUrl = fileObj && fileObj.previewUrl ? fileObj.previewUrl : '';
+  var canOpenSource = !!getInvoiceFilePath(fileObj);
+  var previewTools = previewUrl
+    ? '<button type="button" class="invoice-preview-tool" onclick="changeInvoiceReviewZoom(-0.25)" title="缩小" aria-label="缩小">−</button>' +
+      '<span class="invoice-preview-zoom" id="invoicePreviewZoomLabel">适应</span>' +
+      '<button type="button" class="invoice-preview-tool" onclick="changeInvoiceReviewZoom(0.25)" title="放大" aria-label="放大">＋</button>' +
+      '<button type="button" class="invoice-preview-tool" onclick="resetInvoiceReviewZoom()" title="适应窗口" aria-label="适应窗口">↺</button>' +
+      '<button type="button" class="invoice-preview-tool" id="invoicePreviewFullscreenBtn" onclick="toggleInvoiceReviewFullscreen()" title="全屏预览" aria-label="全屏预览" aria-pressed="false">⛶</button>'
+    : '';
+  var toolbar = '<div class="invoice-review-toolbar" role="toolbar" aria-label="发票预览工具">' +
+    '<span class="invoice-review-title">票面预览</span>' +
+    previewTools +
+    (canOpenSource ? '<button type="button" class="invoice-preview-open" onclick="openCurrentInvoiceFile()" title="使用系统默认程序打开原文件">打开原文件</button>' : '') +
+    '</div>';
+  if (!previewUrl) {
+    return '<section class="invoice-review-preview no-preview" id="invoiceReviewPreview">' + toolbar +
+      '<div class="invoice-review-empty">此文件没有可预览的票面</div></section>';
+  }
+  return '<section class="invoice-review-preview" id="invoiceReviewPreview">' + toolbar +
+    '<div class="invoice-review-viewport" id="invoiceReviewViewport" onwheel="handleInvoiceReviewWheel(event)">' +
+    '<img id="invoiceReviewImage" src="' + escHtml(previewUrl) + '" alt="' + escHtml((fileObj.name || '发票') + '票面预览') + '" ' +
+    'style="transform:rotate(' + (parseInt(fileObj.rotation) || 0) + 'deg)" onload="captureInvoiceReviewFit()"></div></section>';
 }
 
 function buildExtractorDetailsHtml(f) {
@@ -2208,9 +2234,11 @@ function openInvModal(i) {
   var _fwm = _fw + ';font-family:monospace';
   var mRF = function(label, html) { return '<div class="modal-row"><label class="modal-lbl">' + label + '</label><div class="modal-ctrl end">' + html + '</div></div>'; };
   var mRA = function(label, html) { return '<div class="modal-row"><label class="modal-lbl">' + label + '</label><div class="modal-ctrl">' + html + '</div></div>'; };
+  _invoiceReviewZoom = 1;
   document.getElementById('invModalBody').innerHTML =
     '<div class="invoice-file-heading"><span title="' + escHtml(getInvoiceFilePath(f)) + '">\uD83D\uDCC4 ' + escHtml(f.name) + '</span>' +
     '<button type="button" class="manager-detail-btn" onclick="copyCurrentInvoiceDirectory(this)" title="复制当前发票所在目录">复制目录</button></div>' +
+    buildInvoicePreviewHtml(f) +
     mRF('排版份数', '<button class="btn btn-sm btn-icon" onclick="changeModalCopies(-1)">\u2212</button><input type="number" id="mCopies" value="' + f.copies + '" min="1" max="99" style="width:52px;text-align:center;flex:none"><button class="btn btn-sm btn-icon" onclick="changeModalCopies(1)">+</button>') +
     '<div style="font-size:10px;color:var(--text-muted);margin:-6px 0 8px 76px">同一发票在布局中占几个位置</div>' +
     mRF('含税价', '<span style="font-size:14px;font-weight:600;color:var(--success);flex-shrink:0">\u00A5</span><input type="number" id="mAmountTax" value="' + (f.amountTax || '') + '" min="0" step="0.01" placeholder="0.00" style="' + _fw + '">') +
@@ -2232,9 +2260,14 @@ function openInvModal(i) {
     '</div>' +
     ocrHtml;
   document.getElementById('invModal').classList.remove('hidden');
+  requestAnimationFrame(captureInvoiceReviewFit);
 }
 function changeModalCopies(d) { var e = document.getElementById('mCopies'); e.value = Math.max(1, Math.min(99, parseInt(e.value) + d)); }
-function closeInvModal() { document.getElementById('invModal').classList.add('hidden'); }
+function closeInvModal() {
+  var preview = document.getElementById('invoiceReviewPreview');
+  if (preview) preview.classList.remove('is-expanded');
+  document.getElementById('invModal').classList.add('hidden');
+}
 function confirmInvModal() {
   if (S.editIdx < 0) return;
   var f = S.files[S.editIdx];
@@ -2281,6 +2314,74 @@ function showCopySuccess(btn) {
 function copyCurrentInvoiceDirectory(btn) {
   var fileObj = S.files[S.editIdx];
   copyTextValue(getInvoiceDirectory(getInvoiceFilePath(fileObj)), btn);
+}
+
+function openCurrentInvoiceFile() {
+  var fileObj = S.files[S.editIdx];
+  var path = getInvoiceFilePath(fileObj);
+  if (!path) { toast('原文件不可用'); return; }
+  if (!isTauri || !invoke) { toast(path); return; }
+  invoke('open_file', { path: path }).catch(function(error) {
+    toast('打开文件失败: ' + String(error));
+  });
+}
+
+function captureInvoiceReviewFit() {
+  var image = document.getElementById('invoiceReviewImage');
+  if (!image) return;
+  image.style.width = '';
+  image.style.height = '';
+  image.style.maxWidth = '';
+  image.style.maxHeight = '';
+  image.dataset.fitWidth = String(image.offsetWidth || 1);
+  image.dataset.fitHeight = String(image.offsetHeight || 1);
+  updateInvoiceReviewZoomLabel();
+}
+
+function changeInvoiceReviewZoom(delta) {
+  var image = document.getElementById('invoiceReviewImage');
+  if (!image) return;
+  if (!image.dataset.fitWidth) captureInvoiceReviewFit();
+  _invoiceReviewZoom = Math.max(0.5, Math.min(3, _invoiceReviewZoom + delta));
+  image.style.maxWidth = 'none';
+  image.style.maxHeight = 'none';
+  image.style.width = (Number(image.dataset.fitWidth) * _invoiceReviewZoom) + 'px';
+  image.style.height = (Number(image.dataset.fitHeight) * _invoiceReviewZoom) + 'px';
+  updateInvoiceReviewZoomLabel();
+}
+
+function resetInvoiceReviewZoom() {
+  _invoiceReviewZoom = 1;
+  var image = document.getElementById('invoiceReviewImage');
+  if (!image) return;
+  image.removeAttribute('style');
+  var fileObj = S.files[S.editIdx];
+  image.style.transform = 'rotate(' + (parseInt(fileObj && fileObj.rotation) || 0) + 'deg)';
+  requestAnimationFrame(captureInvoiceReviewFit);
+}
+
+function updateInvoiceReviewZoomLabel() {
+  var label = document.getElementById('invoicePreviewZoomLabel');
+  if (label) label.textContent = _invoiceReviewZoom === 1 ? '适应' : Math.round(_invoiceReviewZoom * 100) + '%';
+}
+
+function toggleInvoiceReviewFullscreen() {
+  var preview = document.getElementById('invoiceReviewPreview');
+  if (!preview) return;
+  preview.classList.toggle('is-expanded');
+  var expanded = preview.classList.contains('is-expanded');
+  var button = document.getElementById('invoicePreviewFullscreenBtn');
+  if (button) {
+    button.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+    button.title = expanded ? '退出全屏预览' : '全屏预览';
+  }
+  requestAnimationFrame(resetInvoiceReviewZoom);
+}
+
+function handleInvoiceReviewWheel(event) {
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  changeInvoiceReviewZoom(event.deltaY < 0 ? 0.25 : -0.25);
 }
 
 function copyRelatedInvoiceDirectory(index, btn) {
@@ -3344,6 +3445,14 @@ function resetSettings() {
 // Keyboard shortcuts
 // =====================================================
 document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var invoicePreview = document.getElementById('invoiceReviewPreview');
+    if (invoicePreview && invoicePreview.classList.contains('is-expanded')) {
+      e.preventDefault();
+      toggleInvoiceReviewFullscreen();
+      return;
+    }
+  }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); prevPage(); }
   if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); nextPage(); }

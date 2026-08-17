@@ -167,6 +167,13 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
   assert.match(details, /毛冬/);
   assert.match(details, /柒拾捌圆捌角整/);
   assert.match(details, /\*其他食品\*素牛筋20g/);
+  const previewHtml = context.buildInvoicePreviewHtml({
+    name: 'sample.pdf', previewUrl: 'data:image/jpeg;base64,test', _pdfPath: '/tmp/sample.pdf', rotation: 90
+  });
+  assert.match(previewHtml, /id="invoiceReviewImage"/);
+  assert.match(previewHtml, /rotate\(90deg\)/);
+  assert.match(previewHtml, /打开原文件/);
+  assert.match(context.buildInvoicePreviewHtml({ name: 'sample.xml' }), /没有可预览的票面/);
 
   const dimensionsStart = layoutSource.indexOf('function getInvoiceDisplayDimensions');
   const dimensionsEnd = layoutSource.indexOf('/**\n * Calculate rotation', dimensionsStart);
@@ -272,6 +279,9 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
   assert.match(indexSource, /data-tab="buyer"/);
   assert.match(indexSource, /data-tab="taxRate"/);
   assert.match(indexSource, /data-tab="item"/);
+  assert.match(appSource, /buildInvoicePreviewHtml\(f\)/);
+  assert.match(appSource, /toggleInvoiceReviewFullscreen/);
+  assert.match(fs.readFileSync('src/styles.css', 'utf8'), /\.invoice-review-viewport/);
 
   process.stdout.write('invoice extraction API, management aggregation, and compact PDF layout tests passed\n');
 })().catch((error) => {
