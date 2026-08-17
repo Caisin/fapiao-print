@@ -1,5 +1,5 @@
 use super::normalize::{clean_name, compact, normalize_credit_code};
-use crate::{RecognitionPage, RecognitionWord};
+use crate::{RecognitionLine, RecognitionPage, RecognitionWord};
 use regex::Regex;
 
 #[derive(Debug, Default)]
@@ -71,24 +71,104 @@ fn fill_names_from_coordinates(result: &mut IdentityFields, page: &RecognitionPa
         return;
     }
     let middle = page.img_w as f64 * 0.5;
+    for line in &page.lines {
+        let (left, right) = column_texts(line, middle);
+        if !is_valid_company_field(&result.buyer_name) {
+            if let Some(name) = positioned_company_name(&left) {
+                result.buyer_name = name;
+            }
+        }
+        if !is_valid_company_field(&result.seller_name) {
+            if let Some(name) = positioned_company_name(&right) {
+                result.seller_name = name;
+            }
+        }
+    }
     for word in page.lines.iter().flat_map(|line| &line.words) {
         let line = compact(&word.text);
         let name = name_value(&line)
-            .map(clean_name)
+            .map(clean_positioned_name)
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| clean_name(&line));
+            .unwrap_or_else(|| clean_positioned_name(&line));
         if name.is_empty() {
             continue;
         }
         if name_value(&line).is_none() && !looks_like_company_name(&name) {
             continue;
         }
-        if word.x < middle {
+        if word.x < middle && !is_valid_company_field(&result.buyer_name) {
             result.buyer_name = name;
-        } else {
+        } else if word.x >= middle && !is_valid_company_field(&result.seller_name) {
             result.seller_name = name;
         }
     }
+}
+
+fn positioned_company_name(value: &str) -> Option<String> {
+    let value = compact(value);
+    let name = name_value(&value)
+        .map(clean_positioned_name)
+        .filter(|name| is_valid_company_field(name))
+        .or_else(|| {
+            let name = clean_positioned_name(&value);
+            is_valid_company_field(&name).then_some(name)
+        })?;
+    Some(name)
+}
+
+fn clean_positioned_name(value: &str) -> String {
+    let mut value = value.to_string();
+    for marker in ["售名称", "销名称", "销售方", "售方"] {
+        if let Some(index) = value.find(marker) {
+            value.truncate(index);
+        }
+    }
+    if value.ends_with('售') || value.ends_with('销') {
+        value.pop();
+    }
+    let cleaned = clean_name(&value);
+    if let Some(without_role_tail) = cleaned.strip_prefix('息') {
+        if is_valid_company_field(without_role_tail) {
+            return without_role_tail.to_string();
+        }
+    }
+    cleaned
+}
+
+fn column_texts(line: &RecognitionLine, middle: f64) -> (String, String) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for word in &line.words {
+        if word.x < middle {
+            left.push(word.text.as_str());
+        } else {
+            right.push(word.text.as_str());
+        }
+    }
+    (join_column_words(&left), join_column_words(&right))
+}
+
+fn join_column_words(words: &[&str]) -> String {
+    let mut start = 0;
+    let mut end = words.len();
+    if words.len() > 1
+        && words.first().is_some_and(|word| {
+            matches!(
+                compact(word).as_str(),
+                "购" | "买" | "销" | "售" | "方" | "信" | "息"
+            )
+        })
+    {
+        start += 1;
+    }
+    if end > start
+        && words
+            .last()
+            .is_some_and(|word| matches!(compact(word).as_str(), "销" | "售"))
+    {
+        end -= 1;
+    }
+    words[start..end].concat()
 }
 
 fn name_value(line: &str) -> Option<&str> {
@@ -108,6 +188,12 @@ fn detect_invoice_type(text: &str, is_ticket: bool, is_non_tax: bool) -> String 
     if is_non_tax {
         return "nontax".to_string();
     }
+    if text.contains("增值税专用发票") || text.contains("专用发票") {
+        return "vat-special".to_string();
+    }
+    if text.contains("普通发票") || text.contains("电子普通发票") {
+        return "vat-general".to_string();
+    }
     if text.contains("铁路电子客票") {
         return "train".to_string();
     }
@@ -117,10 +203,7 @@ fn detect_invoice_type(text: &str, is_ticket: bool, is_non_tax: bool) -> String 
     if is_ticket {
         return "ticket".to_string();
     }
-    if text.contains("增值税专用发票") || text.contains("专用发票") {
-        return "vat-special".to_string();
-    }
-    if text.contains("普通发票") || text.contains("电子发票") {
+    if text.contains("电子发票") {
         return "vat-general".to_string();
     }
     "unknown".to_string()
@@ -192,7 +275,8 @@ fn extract_invoice_clerk(text: &str) -> String {
         .collect::<Vec<_>>();
     for (index, line) in lines.iter().enumerate() {
         for label in ["开票人", "开票员", "InvoiceClerk", "Drawer", "Issuer"] {
-            if let Some(value) = line.strip_prefix(label) {
+            if line.starts_with(label) {
+                let value = line.rsplit(label).next().unwrap_or_default();
                 let value = value.trim_start_matches([':', '：']);
                 if is_person_name(value) {
                     return value.to_string();
@@ -264,7 +348,7 @@ fn repair_tab_packed_fields(result: &mut IdentityFields, text: &str) {
         .collect::<Vec<_>>();
     let mut companies = tokens
         .iter()
-        .map(|value| clean_name(value))
+        .map(|value| clean_name(&compact(value)))
         .filter(|value| is_valid_company_field(value))
         .collect::<Vec<_>>();
     companies.dedup();
@@ -275,6 +359,20 @@ fn repair_tab_packed_fields(result: &mut IdentityFields, text: &str) {
         .filter(|value| is_likely_credit_code(value) && value != &result.invoice_no)
         .collect::<Vec<_>>();
     codes.dedup();
+
+    let compact_text = compact(text);
+    let has_ordered_party_labels = compact_text.contains("购买方")
+        && compact_text.contains("销售方")
+        && companies.len() >= 2
+        && codes.len() >= 2
+        && companies[0] != companies[1]
+        && codes[0] != codes[1];
+    if has_ordered_party_labels {
+        result.buyer_name = companies[0].clone();
+        result.seller_name = companies[1].clone();
+        result.buyer_credit_code = codes[0].clone();
+        result.seller_credit_code = codes[1].clone();
+    }
 
     if !is_valid_company_field(&result.buyer_name) {
         result.buyer_name = company_for_code(&companies, &codes, &result.buyer_credit_code)
@@ -312,7 +410,11 @@ fn repair_tab_packed_fields(result: &mut IdentityFields, text: &str) {
 fn is_valid_company_field(value: &str) -> bool {
     let count = value.chars().count();
     (2..=80).contains(&count)
+        && !value.starts_with('*')
         && !value.contains(['\t', '\n', '\r'])
+        && !["税务局", "国家税务总局", "税务机关"]
+            .iter()
+            .any(|label| value.contains(label))
         && looks_like_company_name(value)
         && ![
             "统一社会信用代码",
@@ -392,9 +494,7 @@ fn is_financial_character(ch: char) -> bool {
 fn fill_unqualified_names(result: &mut IdentityFields, text: &str) {
     let names = text
         .lines()
-        .map(compact)
-        .filter_map(|line| name_value(&line).map(clean_name))
-        .filter(|name| !name.is_empty())
+        .flat_map(company_names_after_labels)
         .collect::<Vec<_>>();
     if clean_name(&result.buyer_name).is_empty() {
         result.buyer_name = names.first().cloned().unwrap_or_default();
@@ -406,6 +506,25 @@ fn fill_unqualified_names(result: &mut IdentityFields, text: &str) {
             .cloned()
             .unwrap_or_default();
     }
+}
+
+fn company_names_after_labels(line: &str) -> Vec<String> {
+    let line = compact(line);
+    let labels = line
+        .match_indices("名称")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut names = Vec::new();
+    for (position, label_index) in labels.iter().copied().enumerate() {
+        let start = label_index + "名称".len();
+        let end = labels.get(position + 1).copied().unwrap_or(line.len());
+        let value = line[start..end].trim_start_matches([':', '：']);
+        let name = clean_positioned_name(value);
+        if is_valid_company_field(&name) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 fn fill_from_coordinates(result: &mut IdentityFields, page: &RecognitionPage) {
@@ -449,6 +568,15 @@ fn fill_credit_codes(result: &mut IdentityFields, text: &str, page: &Recognition
     };
     if page.img_w > 0 {
         let middle = page.img_w as f64 * 0.5;
+        for line in &page.lines {
+            let (left, right) = column_texts(line, middle);
+            if result.buyer_credit_code.is_empty() {
+                result.buyer_credit_code = credit_code_in_text(&regex, &left, &result.invoice_no);
+            }
+            if result.seller_credit_code.is_empty() {
+                result.seller_credit_code = credit_code_in_text(&regex, &right, &result.invoice_no);
+            }
+        }
         for word in page.lines.iter().flat_map(|line| &line.words) {
             let normalized = normalize_credit_code(&word.text);
             let Some(code) = regex
@@ -463,9 +591,9 @@ fn fill_credit_codes(result: &mut IdentityFields, text: &str, page: &Recognition
             {
                 continue;
             }
-            if word.x < middle {
+            if word.x < middle && result.buyer_credit_code.is_empty() {
                 result.buyer_credit_code = code;
-            } else {
+            } else if word.x >= middle && result.seller_credit_code.is_empty() {
                 result.seller_credit_code = code;
             }
         }
@@ -505,6 +633,20 @@ fn fill_credit_codes(result: &mut IdentityFields, text: &str, page: &Recognition
             .cloned()
             .unwrap_or_default();
     }
+}
+
+fn credit_code_in_text(regex: &Regex, text: &str, invoice_no: &str) -> String {
+    let normalized = normalize_credit_code(text);
+    regex
+        .captures(&normalized)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str())
+        .filter(|code| {
+            *code != invoice_no
+                && (!code.chars().all(|character| character.is_ascii_digit()) || code.len() == 18)
+        })
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn fill_names_from_code_context(result: &mut IdentityFields, text: &str) {
@@ -562,7 +704,7 @@ fn name_before_code(lines: &[&str], code: &str) -> String {
 }
 
 fn looks_like_company_name(value: &str) -> bool {
-    [
+    let contains_entity_marker = [
         "公司",
         "企业",
         "中心",
@@ -574,9 +716,11 @@ fn looks_like_company_name(value: &str) -> bool {
         "经营部",
         "合作社",
         "事务所",
+        "个体工商",
     ]
     .iter()
-    .any(|suffix| value.contains(suffix))
+    .any(|marker| value.contains(marker));
+    contains_entity_marker || value.ends_with('店') || value.ends_with("餐馆")
 }
 
 fn find_likely_invoice_number(text: &str, result: &IdentityFields) -> String {

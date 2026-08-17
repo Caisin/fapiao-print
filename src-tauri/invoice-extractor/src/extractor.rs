@@ -168,6 +168,7 @@ impl<B: OcrBackend> InvoiceExtractor<B> {
             if info.invoice_no.is_empty() {
                 info.invoice_no = invoice_number_from_file_name(path).unwrap_or_default();
             }
+            repair_truncated_seller_from_file_name(&mut info, path);
             invoices.push(info);
         }
         harmonize_multi_page_invoices(&mut invoices);
@@ -250,6 +251,26 @@ fn invoice_number_from_file_name(path: &Path) -> Option<String> {
     candidates.into_iter().max_by_key(String::len)
 }
 
+fn repair_truncated_seller_from_file_name(info: &mut InvoiceInfo, path: &Path) {
+    let has_unclosed_parenthesis = (info.seller_name.contains('（')
+        && !info.seller_name.contains('）'))
+        || (info.seller_name.contains('(') && !info.seller_name.contains(')'));
+    if !has_unclosed_parenthesis {
+        return;
+    }
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return;
+    };
+    let candidate = stem
+        .split('_')
+        .find(|value| value.starts_with(&info.seller_name) && value.len() > info.seller_name.len());
+    let Some(candidate) = candidate else { return };
+    let closes_parenthesis = candidate.contains('）') || candidate.contains(')');
+    if closes_parenthesis && candidate.chars().count() <= 100 {
+        info.seller_name = candidate.to_string();
+    }
+}
+
 fn collect_invoice_paths(
     directory: &Path,
     paths: &mut Vec<PathBuf>,
@@ -320,6 +341,24 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn repairs_unclosed_individual_business_name_from_structured_file_name() {
+        let mut info = InvoiceInfo {
+            seller_name: "武汉经济技术开发区鑫鸿泰电脑维修服务经营部（个体工商".to_string(),
+            ..Default::default()
+        };
+        let path = Path::new(
+            "dzfp_26422000002806316266_武汉经济技术开发区鑫鸿泰电脑维修服务经营部（个体工商户）_20260804112441.pdf",
+        );
+
+        repair_truncated_seller_from_file_name(&mut info, path);
+
+        assert_eq!(
+            info.seller_name,
+            "武汉经济技术开发区鑫鸿泰电脑维修服务经营部（个体工商户）"
+        );
+    }
 
     #[test]
     fn extracts_structured_xml_with_path_only_api() {

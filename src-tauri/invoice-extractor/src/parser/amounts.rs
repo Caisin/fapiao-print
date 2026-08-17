@@ -11,9 +11,9 @@ pub(crate) struct Amounts {
     pub amount_uppercase: String,
 }
 
-pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> Amounts {
+pub(crate) fn extract_amounts(text: &str, is_non_tax: bool) -> Amounts {
     let compact_text = text.lines().map(compact).collect::<Vec<_>>().join("\n");
-    let all = collect_amounts(&compact_text);
+    let all = collect_amounts(text);
     let mut result = Amounts {
         amount_tax: first_amount_after(
             &compact_text,
@@ -47,7 +47,7 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
 
     if is_non_tax {
         result.amount_no_tax = result.amount_tax;
-        result.tax_rate = extract_tax_rate(text, &result, is_ticket, is_non_tax);
+        result.tax_rate = extract_tax_rate(text, &result, is_non_tax);
         return result;
     }
 
@@ -60,9 +60,7 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
     if result.tax_amount >= result.amount_tax {
         result.tax_amount = 0.0;
     }
-    if !is_ticket {
-        fill_by_math(&mut result, &all);
-    }
+    fill_by_math(&mut result, &all);
     if result.amount_tax > 0.0 && result.amount_no_tax <= 0.0 && result.tax_amount > 0.0 {
         let candidate = round_money(result.amount_tax - result.tax_amount);
         if valid_tax_rate(candidate, result.tax_amount) {
@@ -78,11 +76,11 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
     if result.amount_tax > 0.0 && result.amount_no_tax <= 0.0 && result.tax_amount <= 0.0 {
         result.amount_no_tax = result.amount_tax;
     }
-    result.tax_rate = extract_tax_rate(text, &result, is_ticket, is_non_tax);
+    result.tax_rate = extract_tax_rate(text, &result, is_non_tax);
     result
 }
 
-fn extract_tax_rate(text: &str, amounts: &Amounts, is_ticket: bool, is_non_tax: bool) -> String {
+fn extract_tax_rate(text: &str, amounts: &Amounts, is_non_tax: bool) -> String {
     let mut candidates = Vec::<(usize, String)>::new();
     if let Ok(regex) = Regex::new(r"([0-9]{1,3}(?:\.[0-9]{1,4})?)%") {
         for captures in regex.captures_iter(text) {
@@ -105,18 +103,25 @@ fn extract_tax_rate(text: &str, amounts: &Amounts, is_ticket: bool, is_non_tax: 
     for (_, rate) in candidates {
         push_unique(&mut rates, rate);
     }
-    if rates.is_empty()
-        && !is_ticket
-        && !is_non_tax
-        && amounts.amount_no_tax > 0.0
-        && amounts.tax_amount > 0.0
-    {
-        let percent = amounts.tax_amount / amounts.amount_no_tax * 100.0;
-        if percent <= 100.0 {
-            push_unique(&mut rates, format_derived_percent(percent));
-        }
+    if rates.is_empty() && !is_non_tax && amounts.amount_no_tax > 0.0 && amounts.tax_amount > 0.0 {
+        push_unique(
+            &mut rates,
+            derive_tax_rate(amounts.amount_no_tax, amounts.tax_amount),
+        );
     }
     rates.join(",")
+}
+
+pub(crate) fn derive_tax_rate(amount_no_tax: f64, tax_amount: f64) -> String {
+    if amount_no_tax <= 0.0 || tax_amount < 0.0 {
+        return String::new();
+    }
+    let percent = tax_amount / amount_no_tax * 100.0;
+    if percent <= 100.0 {
+        format_derived_percent(percent)
+    } else {
+        String::new()
+    }
 }
 
 pub(crate) fn normalize_tax_rate(value: &str) -> String {

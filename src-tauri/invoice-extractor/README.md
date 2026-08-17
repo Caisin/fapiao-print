@@ -26,6 +26,7 @@ println!("发票数量: {}", result.invoices.len());
 
 for invoice in &result.invoices {
     println!("票号: {}", invoice.invoice_no);
+    println!("发票类型: {}", invoice.invoice_type);
     println!("销售方: {}", invoice.seller_name);
     println!("含税金额: {}", invoice.amount_tax);
     println!("税率: {}", invoice.tax_rate);
@@ -33,6 +34,12 @@ for invoice in &result.invoices {
     println!("开票人: {}", invoice.invoice_clerk);
 }
 ```
+
+`invoice_type`（JSON 为 `invoiceType`）使用稳定枚举值：增值税普通发票为
+`vat-general`，增值税专用发票为 `vat-special`，非税票据为 `nontax`；仅在
+票面没有明确普票/专票字样时，铁路、航空和其他运输票据才分别返回 `train`、
+`flight`、`ticket`。运输用途同时由 `is_ticket`（JSON 为 `isTicket`）独立标记，
+因此普通电子运输发票会返回 `invoiceType: "vat-general"` 和 `isTicket: true`。
 
 `tax_rate` 保留百分号或税务语义（如 `13%`、`免税`、`不征税`）；多税率
 发票按票面出现顺序使用英文逗号连接。
