@@ -7,10 +7,10 @@ mod paddle;
 mod parser;
 
 pub use backend::{NoOcr, OcrBackend};
-pub use extractor::{extract_file, InvoiceExtractor};
+pub use extractor::{extract_directory, extract_file, InvoiceExtractor};
 pub use model::{
-    AmountValidation, ExtractionOptions, InvoiceFileResult, InvoiceInfo, RecognitionLine,
-    RecognitionPage, RecognitionWord,
+    AmountValidation, DirectoryExtractionError, ExtractionOptions, InvoiceDirectoryResult,
+    InvoiceFileResult, InvoiceInfo, RecognitionLine, RecognitionPage, RecognitionWord,
 };
 #[cfg(feature = "paddle-ocr")]
 pub use paddle::{NoPdfRenderer, PaddleOcrBackend, PdfPageRenderer};

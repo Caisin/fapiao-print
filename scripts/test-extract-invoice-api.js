@@ -47,6 +47,33 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
     () => context.extractInvoiceFile(null),
     /请传入发票文件的绝对路径/
   );
+  const directoryResult = {
+    success: true,
+    directoryPath: '/tmp/invoices',
+    matchedFileCount: 1,
+    extractedFileCount: 1,
+    failedFileCount: 0,
+    files: [expected],
+    errors: []
+  };
+  context.invoke = async (command, args) => {
+    calls.push({ command, args });
+    return directoryResult;
+  };
+  const batch = await context.extractInvoiceDirectory('/tmp/invoices', { useOcr: false });
+  assert.deepEqual(batch, directoryResult);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), {
+    command: 'extract_invoice_directory',
+    args: {
+      directoryPath: '/tmp/invoices',
+      options: { useOcr: false }
+    }
+  });
+  assert.equal(context.window.extractInvoiceDirectory, context.extractInvoiceDirectory);
+  await assert.rejects(
+    () => context.extractInvoiceDirectory(null),
+    /请传入发票目录的绝对路径/
+  );
   process.stdout.write('extractInvoiceFile Rust IPC wrapper tests passed\n');
 })().catch((error) => {
   console.error(error);

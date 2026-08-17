@@ -679,8 +679,35 @@ async function extractInvoiceFile(input, options) {
   });
 }
 
+/**
+ * Recursively extract every supported invoice file under a local directory.
+ * Individual file failures are returned in `errors` and do not stop the batch.
+ *
+ * @param {string|Object} input Absolute directory path, or `{ path }` / `{ directoryPath }`.
+ * @param {Object} [options] Same options as `extractInvoiceFile`.
+ * @returns {Promise<{success:boolean,directoryPath:string,matchedFileCount:number,extractedFileCount:number,failedFileCount:number,files:Array,errors:Array}>}
+ */
+async function extractInvoiceDirectory(input, options) {
+  if (typeof isTauri === 'undefined' || !isTauri || typeof invoke !== 'function') {
+    throw new Error('extractInvoiceDirectory 仅支持 Tauri 桌面环境');
+  }
+
+  var directoryPath = typeof input === 'string'
+    ? input
+    : (input && (input.path || input.directoryPath));
+  if (!directoryPath || typeof directoryPath !== 'string') {
+    throw new TypeError('请传入发票目录的绝对路径');
+  }
+
+  return invoke('extract_invoice_directory', {
+    directoryPath: directoryPath,
+    options: options || null
+  });
+}
+
 if (typeof window !== 'undefined') {
   window.extractInvoiceFile = extractInvoiceFile;
+  window.extractInvoiceDirectory = extractInvoiceDirectory;
 }
 
 

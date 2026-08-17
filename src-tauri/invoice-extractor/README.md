@@ -43,6 +43,35 @@ cargo run \
   /absolute/path/to/invoice.xml
 ```
 
+### 递归解析目录
+
+无 OCR 场景可递归解析目录内的 PDF 文字层、OFD 和 XML：
+
+```rust
+let batch = invoice_extractor::extract_directory("/absolute/path/to/invoices")?;
+println!("匹配: {}, 成功: {}, 失败: {}",
+    batch.matched_file_count,
+    batch.extracted_file_count,
+    batch.failed_file_count,
+);
+for file in &batch.files {
+    println!("{}: {} 张发票", file.file_name, file.invoices.len());
+}
+for failure in &batch.errors {
+    eprintln!("{}: {}", failure.file_path, failure.error);
+}
+```
+
+```bash
+cargo run \
+  --manifest-path src-tauri/invoice-extractor/Cargo.toml \
+  --example extract_directory -- \
+  /absolute/path/to/invoices
+```
+
+目录扫描支持 PDF、OFD、XML、JPG/JPEG、PNG、BMP、WebP、TIFF，忽略其他
+文件且不跟随目录符号链接。结果按文件路径排序；单个文件失败只写入 `errors[]`。
+
 ### 图片 OCR
 
 启用 `paddle-ocr` feature 后，可直接使用仓库现有 PP-OCRv5 模型：
@@ -55,7 +84,7 @@ let result = invoice_extractor::InvoiceExtractor::new(backend)
     .extract_file("invoice.jpg", ExtractionOptions::default())?;
 ```
 
-运行完整示例：
+运行完整示例。第一个参数也可以是目录，此时会递归解析并复用同一 OCR 引擎：
 
 ```bash
 cargo run \
@@ -123,4 +152,16 @@ var result = await extractInvoiceFile('/absolute/path/to/invoice.pdf', {
 });
 
 console.log(result.invoices);
+```
+
+递归解析目录：
+
+```js
+var batch = await extractInvoiceDirectory('/absolute/path/to/invoices', {
+  useOcr: true,
+  ocrPrecision: 'standard',
+  includeRawText: false
+});
+
+console.log(batch.files, batch.errors);
 ```

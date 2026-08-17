@@ -1,8 +1,11 @@
 use crate::backend::{NoOcr, OcrBackend};
 use crate::formats::{read_ofd, read_pdf_pages, read_xml};
-use crate::model::{ExtractionOptions, InvoiceFileResult, InvoiceInfo};
+use crate::model::{
+    DirectoryExtractionError, ExtractionOptions, InvoiceDirectoryResult, InvoiceFileResult,
+    InvoiceInfo,
+};
 use crate::parser::parse_recognition_page;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct InvoiceExtractor<B> {
     ocr: B,
@@ -63,6 +66,49 @@ impl<B: OcrBackend> InvoiceExtractor<B> {
             page_count,
             invoices,
             warnings,
+        })
+    }
+
+    pub fn extract_directory(
+        &self,
+        directory_path: impl AsRef<Path>,
+        options: ExtractionOptions,
+    ) -> Result<InvoiceDirectoryResult, String> {
+        let directory = directory_path.as_ref();
+        if !directory.is_dir() {
+            return Err(format!("发票目录不存在: {}", directory.display()));
+        }
+
+        let mut paths = Vec::new();
+        let mut errors = Vec::new();
+        collect_invoice_paths(directory, &mut paths, &mut errors);
+        paths.sort();
+
+        let matched_file_count = paths.len();
+        let mut files = Vec::with_capacity(matched_file_count);
+        for path in paths {
+            match self.extract_file(&path, options.clone()) {
+                Ok(result) => files.push(result),
+                Err(error) => errors.push(DirectoryExtractionError {
+                    file_path: path.to_string_lossy().into_owned(),
+                    error,
+                }),
+            }
+        }
+        let extracted_file_count = files.len();
+        let failed_file_count = errors.len();
+        let success = matched_file_count > 0
+            && failed_file_count == 0
+            && files.iter().all(|file| file.success);
+
+        Ok(InvoiceDirectoryResult {
+            success,
+            directory_path: directory.to_string_lossy().into_owned(),
+            matched_file_count,
+            extracted_file_count,
+            failed_file_count,
+            files,
+            errors,
         })
     }
 
@@ -145,8 +191,69 @@ impl<B: OcrBackend> InvoiceExtractor<B> {
     }
 }
 
+fn collect_invoice_paths(
+    directory: &Path,
+    paths: &mut Vec<PathBuf>,
+    errors: &mut Vec<DirectoryExtractionError>,
+) {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) => {
+            errors.push(DirectoryExtractionError {
+                file_path: directory.to_string_lossy().into_owned(),
+                error: format!("读取目录失败: {error}"),
+            });
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(DirectoryExtractionError {
+                    file_path: directory.to_string_lossy().into_owned(),
+                    error: format!("读取目录项失败: {error}"),
+                });
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                errors.push(DirectoryExtractionError {
+                    file_path: entry.path().to_string_lossy().into_owned(),
+                    error: format!("读取文件类型失败: {error}"),
+                });
+                continue;
+            }
+        };
+        if file_type.is_dir() {
+            collect_invoice_paths(&entry.path(), paths, errors);
+        } else if file_type.is_file() && is_supported_invoice_path(&entry.path()) {
+            paths.push(entry.path());
+        }
+    }
+}
+
+fn is_supported_invoice_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("pdf" | "ofd" | "xml" | "jpg" | "jpeg" | "png" | "bmp" | "webp" | "tif" | "tiff")
+    )
+}
+
 pub fn extract_file(file_path: impl AsRef<Path>) -> Result<InvoiceFileResult, String> {
     InvoiceExtractor::new(NoOcr).extract_file(file_path, ExtractionOptions::default())
+}
+
+pub fn extract_directory(
+    directory_path: impl AsRef<Path>,
+) -> Result<InvoiceDirectoryResult, String> {
+    InvoiceExtractor::new(NoOcr).extract_directory(directory_path, ExtractionOptions::default())
 }
 
 #[cfg(test)]
@@ -192,5 +299,36 @@ mod tests {
         });
 
         assert_eq!(incomplete.invoice_type, "vat-general");
+    }
+
+    #[test]
+    fn recursively_extracts_supported_files_and_keeps_failures() {
+        let root = std::env::temp_dir().join(format!(
+            "invoice-extractor-directory-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            nested.join("invoice.xml"),
+            "<EInvoice><InvoiceNumber>25322000000337005189</InvoiceNumber></EInvoice>",
+        )
+        .unwrap();
+        fs::write(root.join("broken.pdf"), b"not a pdf").unwrap();
+        fs::write(root.join("ignored.txt"), b"not an invoice").unwrap();
+
+        let result = extract_directory(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+
+        assert!(!result.success);
+        assert_eq!(result.matched_file_count, 2);
+        assert_eq!(result.extracted_file_count, 1);
+        assert_eq!(result.failed_file_count, 1);
+        assert_eq!(result.files[0].file_name, "invoice.xml");
+        assert!(result.errors[0].file_path.ends_with("broken.pdf"));
     }
 }

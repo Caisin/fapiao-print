@@ -169,3 +169,22 @@ pub struct InvoiceFileResult {
     pub invoices: Vec<InvoiceInfo>,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryExtractionError {
+    pub file_path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvoiceDirectoryResult {
+    pub success: bool,
+    pub directory_path: String,
+    pub matched_file_count: usize,
+    pub extracted_file_count: usize,
+    pub failed_file_count: usize,
+    pub files: Vec<InvoiceFileResult>,
+    pub errors: Vec<DirectoryExtractionError>,
+}

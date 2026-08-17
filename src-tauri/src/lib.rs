@@ -480,6 +480,28 @@ async fn extract_invoice_file(
     .map_err(|e| format!("发票信息提取任务失败: {e}"))?
 }
 
+/// Recursively extract supported invoice files without blocking the IPC thread.
+#[command]
+async fn extract_invoice_directory(
+    directory_path: String,
+    options: Option<ExtractionOptions>,
+) -> Result<invoice_extractor::InvoiceDirectoryResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(feature = "ocr")]
+        {
+            return InvoiceExtractor::new(invoice_ocr_backend()?)
+                .extract_directory(directory_path, options.unwrap_or_default());
+        }
+        #[cfg(not(feature = "ocr"))]
+        {
+            InvoiceExtractor::new(NoOcr)
+                .extract_directory(directory_path, options.unwrap_or_default())
+        }
+    })
+    .await
+    .map_err(|e| format!("发票目录提取任务失败: {e}"))?
+}
+
 /// Get user Downloads directory path
 #[command]
 fn get_downloads_dir() -> Result<String, String> {
@@ -1564,6 +1586,7 @@ pub fn run() {
         extract_pdf_text,
         extract_pdf_texts,
         extract_invoice_file,
+        extract_invoice_directory,
         get_app_version,
         get_config,
         get_temp_dir,
@@ -1604,6 +1627,7 @@ pub fn run() {
         extract_pdf_text,
         extract_pdf_texts,
         extract_invoice_file,
+        extract_invoice_directory,
         get_app_version,
         get_config,
         get_temp_dir,

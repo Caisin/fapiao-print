@@ -103,6 +103,7 @@ npm run bump <版本号>    # 同步版本号到 Cargo.toml + tauri.conf.json
 
 - **Rust 入口**: `invoice_extractor::extract_file(path)`（无 OCR）或 `InvoiceExtractor::new(backend).extract_file(path, options)`
 - **桌面入口**: `window.extractInvoiceFile(filePath, options)` 只调用一次 `extract_invoice_file` IPC，不修改 `S.files` 或 UI 状态
+- **目录入口**: `window.extractInvoiceDirectory(directoryPath, options)` / `InvoiceExtractor::extract_directory()` 递归扫描支持格式；按路径排序，单文件失败写入 `errors[]`，不跟随目录符号链接
 - **支持格式**: PDF / OFD / XML / JPG / JPEG / PNG / BMP / WebP / TIFF
 - **统一结果**: `{ success, filePath, fileName, fileType, pageCount, invoices[], warnings[] }`；票面字段含税率、中文大写金额和开票人，多页 PDF 每页对应一个 `invoices[]` 项
 - **模块边界**: `model / parser / formats / extractor / backend / paddle` 分文件维护，禁止将新解析逻辑堆回 `invoice-engine/lib.rs`

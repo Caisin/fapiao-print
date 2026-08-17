@@ -213,6 +213,16 @@ var result = await extractInvoiceFile('/path/to/invoice.pdf', {
 console.log(result.invoices);
 ```
 
+指定目录可递归批量提取，单个坏文件不会中断其他文件：
+
+```js
+var batch = await extractInvoiceDirectory('/path/to/invoices', {
+  useOcr: true,
+  includeRawText: false
+});
+console.log(batch.files, batch.errors);
+```
+
 支持 PDF、OFD、XML、JPG/JPEG、PNG、BMP、WebP、TIFF。PDF 每页对应
 `invoices[]` 中的一项；每项统一返回票号、日期、类型、购销方名称与税号、
 含税/不含税金额、税额、税率、中文大写金额、开票人、识别来源和原始文本。轻量版可直接识别 PDF 文字层、
@@ -222,6 +232,7 @@ Rust 代码可直接使用无 OCR 的路径入口：
 
 ```rust
 let result = invoice_extractor::extract_file("/path/to/invoice.xml")?;
+let batch = invoice_extractor::extract_directory("/path/to/invoices")?;
 ```
 
 需要扫描件识别时启用 crate 的 `paddle-ocr` feature，使用内置
