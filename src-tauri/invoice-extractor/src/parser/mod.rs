@@ -58,6 +58,8 @@ pub(crate) fn parse_recognition_page(
         amount_no_tax: amounts.amount_no_tax,
         tax_amount: amounts.tax_amount,
         tax_rate: amounts.tax_rate,
+        amount_uppercase: amounts.amount_uppercase,
+        invoice_clerk: identity.invoice_clerk,
         is_ticket: identity.is_ticket,
         is_non_tax: identity.is_non_tax,
         amount_validation: validation,
@@ -126,7 +128,8 @@ mod tests {
             "电子发票（普通发票）\n发票号码：25322000000337005189\n开票日期：2025年07月22日\n\
              购买方名称：江苏测试科技有限公司\n统一社会信用代码：9132020013590404XW\n\
              销售方名称：无锡示例商贸有限公司\n统一社会信用代码：91320200796148368W\n\
-             合计 ¥100.00 ¥13.00\n税率 13%\n价税合计（小写）¥113.00",
+             合计 ¥100.00 ¥13.00\n税率 13%\n价税合计（大写）壹佰壹拾叁圆整\n\
+             价税合计（小写）¥113.00\n开票人：张三",
         );
         let info = parse_recognition_page(&page, 0, "pdf-text", true);
         assert_eq!(info.invoice_no, "25322000000337005189");
@@ -137,6 +140,8 @@ mod tests {
         assert_eq!(info.amount_no_tax, 100.0);
         assert_eq!(info.tax_amount, 13.0);
         assert_eq!(info.tax_rate, "13%");
+        assert_eq!(info.amount_uppercase, "壹佰壹拾叁圆整");
+        assert_eq!(info.invoice_clerk, "张三");
         assert!(info.amount_validation.is_none());
     }
 

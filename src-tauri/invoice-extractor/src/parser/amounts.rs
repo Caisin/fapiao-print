@@ -8,6 +8,7 @@ pub(crate) struct Amounts {
     pub amount_no_tax: f64,
     pub tax_amount: f64,
     pub tax_rate: String,
+    pub amount_uppercase: String,
 }
 
 pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> Amounts {
@@ -30,8 +31,9 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
         ),
         ..Default::default()
     };
+    result.amount_uppercase = extract_chinese_total_text(&compact_text);
     if result.amount_tax <= 0.0 {
-        result.amount_tax = extract_chinese_total(&compact_text);
+        result.amount_tax = parse_chinese_number(&result.amount_uppercase);
     }
     if result.amount_tax <= 0.0 {
         result.amount_tax = all.iter().copied().fold(0.0, f64::max);
@@ -226,18 +228,18 @@ fn fill_by_math(result: &mut Amounts, values: &[f64]) {
     }
 }
 
-fn extract_chinese_total(text: &str) -> f64 {
+fn extract_chinese_total_text(text: &str) -> String {
     let regex = match Regex::new(
         r"(?:价税合计|金额合计)?.{0,10}(?:大写)?[):：）]?([零壹贰叁肆伍陆柒捌玖拾佰仟万亿萬億圆元角分整正一二三四五六七八九十]{3,})",
     ) {
         Ok(regex) => regex,
-        Err(_) => return 0.0,
+        Err(_) => return String::new(),
     };
     regex
         .captures(text)
         .and_then(|captures| captures.get(1))
-        .map(|value| parse_chinese_number(value.as_str()))
-        .unwrap_or(0.0)
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_default()
 }
 
 fn parse_chinese_number(input: &str) -> f64 {

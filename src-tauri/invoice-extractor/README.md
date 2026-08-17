@@ -24,11 +24,15 @@ for invoice in &result.invoices {
     println!("销售方: {}", invoice.seller_name);
     println!("含税金额: {}", invoice.amount_tax);
     println!("税率: {}", invoice.tax_rate);
+    println!("大写金额: {}", invoice.amount_uppercase);
+    println!("开票人: {}", invoice.invoice_clerk);
 }
 ```
 
 `tax_rate` 保留百分号或税务语义（如 `13%`、`免税`、`不征税`）；多税率
 发票按票面出现顺序使用英文逗号连接。
+
+`amount_uppercase` 保留票面中文大写金额，`invoice_clerk` 返回开票人姓名。
 
 可直接运行仓库示例：
 

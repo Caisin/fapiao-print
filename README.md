@@ -215,7 +215,7 @@ console.log(result.invoices);
 
 支持 PDF、OFD、XML、JPG/JPEG、PNG、BMP、WebP、TIFF。PDF 每页对应
 `invoices[]` 中的一项；每项统一返回票号、日期、类型、购销方名称与税号、
-含税/不含税金额、税额、税率、识别来源和原始文本。轻量版可直接识别 PDF 文字层、
+含税/不含税金额、税额、税率、中文大写金额、开票人、识别来源和原始文本。轻量版可直接识别 PDF 文字层、
 OFD 和 XML；扫描 PDF 与图片文件需要 OCR 版。
 
 Rust 代码可直接使用无 OCR 的路径入口：

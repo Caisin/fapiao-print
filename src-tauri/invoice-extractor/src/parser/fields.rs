@@ -11,6 +11,7 @@ pub(crate) struct IdentityFields {
     pub buyer_credit_code: String,
     pub seller_name: String,
     pub seller_credit_code: String,
+    pub invoice_clerk: String,
     pub is_ticket: bool,
     pub is_non_tax: bool,
 }
@@ -48,6 +49,7 @@ pub(crate) fn extract_identity(text: &str, page: &RecognitionPage) -> IdentityFi
             &compact_text,
             &["销售方统一社会信用代码", "销售方纳税人识别号"],
         ),
+        invoice_clerk: extract_invoice_clerk(text),
         is_ticket,
         is_non_tax,
     };
@@ -139,6 +141,53 @@ fn capture_code(text: &str, labels: &[&str]) -> String {
         }
     }
     String::new()
+}
+
+fn extract_invoice_clerk(text: &str) -> String {
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let compact_line = compact(line);
+        for label in ["开票人:", "开票员:", "InvoiceClerk:", "Drawer:", "Issuer:"] {
+            if let Some(value) = compact_line.strip_prefix(label) {
+                if is_person_name(value) {
+                    return value.to_string();
+                }
+            }
+        }
+    }
+
+    let lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let Some(total_index) = lines.iter().position(|line| {
+        line.chars()
+            .filter(|ch| is_financial_character(*ch))
+            .count()
+            >= 3
+            && (line.contains('圆') || line.contains('元'))
+    }) else {
+        return String::new();
+    };
+    lines
+        .iter()
+        .skip(total_index + 1)
+        .take(8)
+        .map(|line| compact(line))
+        .find(|line| is_person_name(line))
+        .unwrap_or_default()
+}
+
+fn is_person_name(value: &str) -> bool {
+    let count = value.chars().count();
+    (2..=6).contains(&count)
+        && value
+            .chars()
+            .all(|ch| matches!(ch as u32, 0x3400..=0x9fff | 0xf900..=0xfaff) || ch == '·')
+}
+
+fn is_financial_character(ch: char) -> bool {
+    "零壹贰叁肆伍陆柒捌玖拾佰仟万亿萬億圆元角分整正一二三四五六七八九十".contains(ch)
 }
 
 fn fill_unqualified_names(result: &mut IdentityFields, text: &str) {

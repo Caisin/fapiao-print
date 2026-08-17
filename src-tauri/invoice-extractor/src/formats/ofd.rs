@@ -117,6 +117,19 @@ fn parse_custom_data(xml: &str) -> Result<crate::InvoiceInfo, String> {
             &values,
             &["税率", "TaxRate", "TaxRateValue"],
         )),
+        amount_uppercase: take_alias(
+            &values,
+            &[
+                "价税合计（大写）",
+                "价税合计(大写)",
+                "AmountInWords",
+                "TaxInclusiveTotalAmountInWords",
+            ],
+        ),
+        invoice_clerk: take_alias(
+            &values,
+            &["开票人", "开票员", "InvoiceClerk", "Drawer", "Issuer"],
+        ),
         amount_no_tax: parse_alias_number(&values, &["合计金额", "TaxExclusiveTotalAmount"]),
         tax_amount: parse_alias_number(&values, &["合计税额", "TaxTotalAmount"]),
         amount_tax: parse_alias_number(&values, &["价税合计", "TaxInclusiveTotalAmount", "Amount"]),
@@ -178,6 +191,11 @@ fn collect_tag_refs(xml: &str, output: &mut HashMap<String, Vec<u32>>) -> Result
         "TaxRate",
         "TaxRateValue",
         "TaxScheme",
+        "InvoiceClerk",
+        "Drawer",
+        "Issuer",
+        "AmountInWords",
+        "TaxInclusiveTotalAmountInWords",
     ];
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -231,8 +249,13 @@ fn merge_tagged_fields(
             .map(|ids| {
                 ids.iter()
                     .filter_map(|id| object_text.get(id))
-                    .map(String::as_str)
-                    .collect::<String>()
+                    .fold(Vec::<&str>::new(), |mut values, value| {
+                        if !values.contains(&value.as_str()) {
+                            values.push(value.as_str());
+                        }
+                        values
+                    })
+                    .join("")
             })
             .unwrap_or_default()
     };
@@ -247,6 +270,16 @@ fn merge_tagged_fields(
     } else {
         tax_rate
     };
+    let amount_uppercase = ["AmountInWords", "TaxInclusiveTotalAmountInWords"]
+        .iter()
+        .map(|field| get(field))
+        .find(|value| !value.is_empty())
+        .unwrap_or_default();
+    let invoice_clerk = ["InvoiceClerk", "Drawer", "Issuer"]
+        .iter()
+        .map(|field| get(field))
+        .find(|value| !value.is_empty())
+        .unwrap_or_default();
     let tagged = crate::InvoiceInfo {
         invoice_no: get("InvoiceNo"),
         invoice_date: get("IssueDate"),
@@ -255,6 +288,8 @@ fn merge_tagged_fields(
         seller_name: get("SellerName"),
         seller_credit_code: get("SellerTaxID"),
         tax_rate: crate::parser::normalize_tax_rate(&tax_rate),
+        amount_uppercase,
+        invoice_clerk,
         amount_no_tax: parse_number(&get("TaxExclusiveTotalAmount")),
         tax_amount: parse_number(&get("TaxTotalAmount")),
         amount_tax: parse_number(&get("TaxInclusiveTotalAmount")).max(parse_number(&get("Amount"))),
@@ -262,6 +297,12 @@ fn merge_tagged_fields(
     };
     if !tagged.tax_rate.is_empty() {
         info.tax_rate = tagged.tax_rate.clone();
+    }
+    if !tagged.amount_uppercase.is_empty() {
+        info.amount_uppercase = tagged.amount_uppercase.clone();
+    }
+    if !tagged.invoice_clerk.is_empty() {
+        info.invoice_clerk = tagged.invoice_clerk.clone();
     }
     if tagged.amount_no_tax > 0.0 {
         info.amount_no_tax = tagged.amount_no_tax;
@@ -344,6 +385,8 @@ mod tests {
           <ofd:CustomData Name="合计金额">100.00</ofd:CustomData>
           <ofd:CustomData Name="合计税额">13.00</ofd:CustomData>
           <ofd:CustomData Name="税率">13%</ofd:CustomData>
+          <ofd:CustomData Name="价税合计（大写）">壹佰壹拾叁圆整</ofd:CustomData>
+          <ofd:CustomData Name="开票人">张三</ofd:CustomData>
         </ofd:OFD>"#;
         let info = parse_custom_data(xml).unwrap();
         assert_eq!(info.invoice_no, "25322000000337005189");
@@ -351,6 +394,8 @@ mod tests {
         assert_eq!(info.seller_name, "无锡示例商贸有限公司");
         assert_eq!(info.amount_tax, 113.0);
         assert_eq!(info.tax_rate, "13%");
+        assert_eq!(info.amount_uppercase, "壹佰壹拾叁圆整");
+        assert_eq!(info.invoice_clerk, "张三");
     }
 
     #[test]
@@ -360,11 +405,15 @@ mod tests {
           <ofd:TextObject ID="43"><ofd:TextCode>¥</ofd:TextCode></ofd:TextObject>
           <ofd:TextObject ID="44"><ofd:TextCode>233.02</ofd:TextCode></ofd:TextObject>
           <ofd:TextObject ID="45"><ofd:TextCode>6%</ofd:TextCode></ofd:TextObject>
+          <ofd:TextObject ID="46"><ofd:TextCode>卢晨</ofd:TextCode></ofd:TextObject>
+          <ofd:TextObject ID="47"><ofd:TextCode>贰佰叁拾叁圆整</ofd:TextCode></ofd:TextObject>
         </ofd:Page>"#;
         let tags = r#"<ofd:Tags xmlns:ofd="urn:ofd">
           <ofd:SellerName><ofd:ObjectRef>42</ofd:ObjectRef></ofd:SellerName>
           <ofd:TaxExclusiveTotalAmount><ofd:ObjectRef>43</ofd:ObjectRef><ofd:ObjectRef>44</ofd:ObjectRef></ofd:TaxExclusiveTotalAmount>
           <ofd:TaxScheme><ofd:ObjectRef>45</ofd:ObjectRef></ofd:TaxScheme>
+          <ofd:InvoiceClerk><ofd:ObjectRef>46</ofd:ObjectRef><ofd:ObjectRef>46</ofd:ObjectRef></ofd:InvoiceClerk>
+          <ofd:AmountInWords><ofd:ObjectRef>47</ofd:ObjectRef></ofd:AmountInWords>
         </ofd:Tags>"#;
         let mut objects = HashMap::new();
         let mut refs = HashMap::new();
@@ -375,5 +424,7 @@ mod tests {
         assert_eq!(info.seller_name, "无锡示例商贸有限公司");
         assert_eq!(info.amount_no_tax, 233.02);
         assert_eq!(info.tax_rate, "6%");
+        assert_eq!(info.invoice_clerk, "卢晨");
+        assert_eq!(info.amount_uppercase, "贰佰叁拾叁圆整");
     }
 }

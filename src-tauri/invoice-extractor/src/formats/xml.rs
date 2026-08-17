@@ -64,6 +64,14 @@ pub(crate) fn parse_xml_content(
                             info.tax_rate = rate;
                         }
                     }
+                    "TotalTax-includedAmountInWords"
+                    | "TotalTaxIncludedAmountInWords"
+                    | "TaxInclusiveTotalAmountInWords"
+                    | "AmountInWords"
+                    | "ChineseAmount" => info.amount_uppercase = value,
+                    "InvoiceClerk" | "Drawer" | "Issuer" | "InvoiceIssuer" => {
+                        info.invoice_clerk = value;
+                    }
                     "TotalTax-includedAmount"
                     | "TotalTaxIncludedAmount"
                     | "TaxInclusiveTotalAmount"
@@ -124,11 +132,14 @@ mod tests {
     fn reads_decimal_tax_rate_as_percent() {
         let parsed = parse_xml_content(
             "<EInvoice><TaxRate>0.13</TaxRate><TotalAmWithoutTax>100</TotalAmWithoutTax>\
-             <TotalTaxAm>13</TotalTaxAm><TotalTax-includedAmount>113</TotalTax-includedAmount></EInvoice>",
+             <TotalTaxAm>13</TotalTaxAm><TotalTax-includedAmount>113</TotalTax-includedAmount>\
+             <AmountInWords>壹佰壹拾叁圆整</AmountInWords><InvoiceClerk>张三</InvoiceClerk></EInvoice>",
             false,
         )
         .unwrap();
 
         assert_eq!(parsed.info.tax_rate, "13%");
+        assert_eq!(parsed.info.amount_uppercase, "壹佰壹拾叁圆整");
+        assert_eq!(parsed.info.invoice_clerk, "张三");
     }
 }
