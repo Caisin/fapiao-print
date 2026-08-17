@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-- **版本**: v2.2.1
+- **版本**: v2.3.0
 - **技术栈**: Tauri 2.x (Rust) + 原生 HTML/CSS/JS（无框架）
 - **前端**: `src/{index.html, styles.css, ocr.js, layout.js, print.js, app.js}`
 - **后端**: `src-tauri/src/{main.rs, lib.rs, pdf_engine.rs, pdfium_print.rs}`
@@ -23,7 +23,7 @@ npm run bump <版本号>    # 同步版本号到 Cargo.toml + tauri.conf.json
 
 - **版本号数据源**: `package.json` 是唯一数据源
 - **编译缓存**: 只改 HTML/JS/CSS 不会触发重编译，需改 Rust 文件才会完整重编译
-- **CI/CD**: GitHub Actions，push tag `v*` 触发
+- **CI/CD**: GitHub Actions，push tag `v*` 同时生成 Windows 四产物与 macOS Universal 轻量/OCR 两个 DMG
 
 ### IPC 异步化 (async + spawn_blocking)
 

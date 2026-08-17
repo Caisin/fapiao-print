@@ -3,13 +3,13 @@
 # 📄 发票酱
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-blue.svg)]()
+[![Platform: Windows | macOS](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-blue.svg)]()
 [![Tauri 2.x](https://img.shields.io/badge/Tauri-2.x-orange.svg)]()
-[![Version](https://img.shields.io/badge/Version-2.1.2-blue.svg)]()
+[![Version](https://img.shields.io/badge/Version-2.3.0-blue.svg)]()
 
-轻量桌面应用，专为批量打印电子发票设计。支持 PDF、OFD、图片等多格式导入，智能排版，一键打印或导出。
+轻量跨平台桌面应用，专为批量管理、复核和打印电子发票设计。支持 PDF、OFD、XML、图片等多格式导入，智能排版，一键打印或导出。
 
-提供 **轻量版** 和 **OCR 版**（含 PP-OCRv5 智能识别），单文件 exe 即开即用。
+提供 Windows/macOS **轻量版** 和 **OCR 版**（含 PP-OCRv5 智能识别）。
 
 ## ✨ 功能特性
 
@@ -22,6 +22,8 @@ OFD（开放版式文档）是国家标准电子发票格式，本工具提供�
 ### 📥 文件管理
 
 - **多格式支持**：PDF、OFD、XML 数电票、JPG、PNG、BMP、WebP、TIFF
+- **递归目录导入**（v2.3.0）：一次导入整个目录及子目录，保留文件级计数，多页发票不重复计数
+- **发票管理与复核**（v2.3.0）：按日期、主体、金额、票种筛选汇总；重复票号和解析异常显著标记，详情中可预览票面、查看关联文件并复制目录
 - **XML 数电票**（v2.0.7）：解析 `<EInvoice>` 格式，提取发票号码/日期/金额/买卖方信息，汇总表、CSV 导出、批量重命名全兼容；纯数据格式不参与排版打印
 - **文件列表记忆**（v2.0.7）：可选开关，启动时自动恢复上次打开的文件列表，仅记忆文件路径
 - **打印状态追踪**（v2.0.7）：三种过滤（全部/未打印/已打印），打印后自动标记绿色 ✓，状态持久化
@@ -55,6 +57,7 @@ OFD（开放版式文档）是国家标准电子发票格式，本工具提供�
 ### 📊 数据导出
 
 - **发票汇总表**（v2.0.3）：报销必备，一键导出所有发票明细，字段可勾选（14 项），金额/名称等可直接编辑修正，合计行自动汇总含税/不含税/税额，CSV 格式 Excel 直接打开，列选择和备注持久化记忆
+- **财务维度汇总**（v2.3.0）：按月份、销售方、购买方、票种和金额区间查询，快速统计份数、价税合计、不含税金额与税额
 
 ### 🖨️ 打印与导出
 
@@ -97,10 +100,12 @@ OFD（开放版式文档）是国家标准电子发票格式，本工具提供�
 | `发票酱_x64_绿色版.exe` | 轻量版便携（单文件 exe，无需安装） |
 | `发票酱_x64_OCR版-setup.exe` | OCR 版安装包（含 PP-OCRv5） |
 | `发票酱_x64_OCR绿色版.zip` | OCR 版便携（exe + models/） |
+| `发票酱_*_macOS_Universal.dmg` | macOS 轻量版（Intel + Apple Silicon） |
+| `发票酱_*_macOS_Universal_OCR版.dmg` | macOS OCR 版（Intel + Apple Silicon） |
 
 > 💡 文字型 PDF / OFD 发票选轻量版即可自动提取金额和销售方信息；图片型 PDF 和图片需 OCR 版。
 
-**系统要求**：仅支持 **Windows 10 1803 及以上版本** 或 **Windows 11**。
+**系统要求**：Windows 10 1803 及以上版本、Windows 11，或支持当前 Tauri 2 运行时的 macOS。macOS 产物未签名和公证，首次启动需在系统安全设置中确认。
 
 **⚠️ 不支持 Windows 7/8**：依赖的 WebView2 和系统 PDF 组件已停止支持，无法正常运行。
 
@@ -171,7 +176,9 @@ ticketchan/
 │   ├── models/                     # PP-OCRv5 MNN 模型（OCR 版打包用）
 │   ├── Cargo.toml                  # ocr feature flag + lopdf 0.39
 │   ├── tauri.conf.json             # 轻量版配置
-│   └── tauri.ocr.conf.json         # OCR 版配置（含 models）
+│   ├── tauri.ocr.conf.json         # Windows OCR 版配置（含 models）
+│   ├── tauri.macos.conf.json       # macOS Universal DMG 配置
+│   └── tauri.macos.ocr.conf.json   # macOS OCR Universal DMG 配置
 ├── scripts/
 │   ├── build-all.js                # 一键全量构建（4 产物）
 │   └── bump-version.js             # 版本号同步
@@ -276,6 +283,9 @@ crate 本身不依赖 Tauri、WinRT 或 CoreGraphics，Windows/macOS 的 PDF 渲
 - [x] 版本号显示 + 检查更新 — GitHub Release 自动检查 + 启动静默检查 + 弹窗提示（v2.1.0）
 - [x] 购销方识别优化 — 表头锚点 + 动态边界 + 交叉验证（v2.1.1）
 - [x] 字段提取准确性修复 — CJK 拆字格式下信用代码/名称/日期提取兜底 + 性能优化（v2.1.2）
+- [x] 跨平台统一发票提取库 + 递归目录导入 + 商品明细（v2.3.0）
+- [x] 发票管理、财务维度汇总、重复/错误复核与票面预览（v2.3.0）
+- [x] Windows + macOS Universal 双平台发布（v2.3.0）
 
 ## 🤖 关于此项目
 

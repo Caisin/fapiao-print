@@ -13,12 +13,10 @@ env:
   PYTHONIOENCODING: utf-8
 
 jobs:
-  build:
+  build-windows:
+    name: Build Windows packages
     runs-on: windows-latest
     timeout-minutes: 90
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -136,51 +134,121 @@ jobs:
             Write-Host "  $($_.Name)  ($sizeMB MB)"
           }
 
-      - name: Extract release notes from CHANGELOG
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: dist/*
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS Universal packages
+    runs-on: macos-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Install cmake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.x'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build lightweight and OCR DMGs
+        shell: bash
         run: |
-          # 从 CHANGELOG.md 提取当前 tag 对应段落作为 Release body
-          $tag = "${{ github.ref_name }}"
-          Write-Host "Extracting release notes for tag: $tag"
-          $lines = Get-Content CHANGELOG.md -Encoding UTF8
-          $capturing = $false
-          $bodyLines = @()
-          foreach ($line in $lines) {
-            if ($line -match "^## $tag\b") {
-              $capturing = $true
-              $bodyLines += $line
-              continue
-            }
-            if ($capturing) {
-              # 遇到分隔线 --- 表示本段结束
-              if ($line -match "^---\s*$") { break }
-              # 遇到下一个版本标题也表示结束
-              if ($line -match "^## v") { break }
-              $bodyLines += $line
-            }
-          }
-          $body = $bodyLines -join "`n"
-          if ([string]::IsNullOrWhiteSpace($body)) {
-            $body = "See [CHANGELOG](https://github.com/erma0/fapiao-print/blob/master/CHANGELOG.md) for details."
-          } else {
-            # 末尾追加 CHANGELOG 链接
-            $body = $body + "`n`n---`n详见 [CHANGELOG](https://github.com/erma0/fapiao-print/blob/master/CHANGELOG.md)"
-          }
-          # 写入文件供 release action 使用
-          $body | Out-File -FilePath release_body.txt -Encoding UTF8 -NoNewline
-          Write-Host "`n=== Release Body Preview ==="
-          Write-Host $body
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          bundle_dir="src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+          mkdir -p dist
+
+          npx tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
+          light_dmg=$(find "$bundle_dir" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -n "$light_dmg"
+          cp "$light_dmg" "dist/发票酱_${version}_macOS_Universal.dmg"
+
+          rm -rf "$bundle_dir"
+          npx tauri build --target universal-apple-darwin --features ocr --config src-tauri/tauri.macos.ocr.conf.json
+          ocr_dmg=$(find "$bundle_dir" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -n "$ocr_dmg"
+          cp "$ocr_dmg" "dist/发票酱_${version}_macOS_Universal_OCR版.dmg"
+
+      - name: Verify macOS artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile_count=$(find dist -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')
+          test "$mapfile_count" = "2"
+          ls -lh dist/*.dmg
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -n "/^## ${GITHUB_REF_NAME} /,/^---$/p" CHANGELOG.md | sed '$d' > release_body.txt
+          if [ ! -s release_body.txt ]; then
+            printf 'See [CHANGELOG](https://github.com/Caisin/fapiao-print/blob/master/CHANGELOG.md) for details.\n' > release_body.txt
+          else
+            printf '\n---\n详见 [CHANGELOG](https://github.com/Caisin/fapiao-print/blob/master/CHANGELOG.md)\n' >> release_body.txt
+          fi
+
+      - name: List release packages
+        run: ls -lh release-assets
 
       - name: Create Release & Upload
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: release_body.txt
           draft: false
           prerelease: false
-          files: dist/*
+          files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
