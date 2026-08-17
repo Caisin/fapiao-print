@@ -3,6 +3,8 @@ mod fields;
 mod items;
 mod normalize;
 
+pub(crate) use fields::detect_invoice_type;
+
 use crate::{AmountValidation, InvoiceInfo, RecognitionPage};
 pub(crate) use amounts::normalize_tax_rate;
 

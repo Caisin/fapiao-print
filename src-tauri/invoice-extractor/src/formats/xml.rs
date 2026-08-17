@@ -97,13 +97,9 @@ pub(crate) fn parse_xml_content(
         include_raw_text,
     );
     info.merge_missing(parsed);
-    if info.invoice_type.is_empty() {
-        info.invoice_type = match (invoice_type.is_empty(), vat_type.is_empty()) {
-            (false, false) => format!("{invoice_type}({vat_type})"),
-            (false, true) => invoice_type,
-            (true, false) => vat_type,
-            (true, true) => String::new(),
-        };
+    if info.invoice_type.is_empty() || info.invoice_type == "unknown" {
+        let type_text = format!("{invoice_type}\n{vat_type}");
+        info.invoice_type = crate::parser::detect_invoice_type(&type_text, false, false);
     }
     info.source = "xml".to_string();
     info.amount = if info.amount_tax > 0.0 {
@@ -141,5 +137,24 @@ mod tests {
         assert_eq!(parsed.info.tax_rate, "13%");
         assert_eq!(parsed.info.amount_uppercase, "壹佰壹拾叁圆整");
         assert_eq!(parsed.info.invoice_clerk, "张三");
+    }
+
+    #[test]
+    fn normalizes_general_and_special_vat_labels() {
+        let general = parse_xml_content(
+            "<EInvoice><EInvoiceType><LabelName>电子发票</LabelName></EInvoiceType>\
+             <GeneralOrSpecialVAT><LabelName>普通发票</LabelName></GeneralOrSpecialVAT></EInvoice>",
+            false,
+        )
+        .unwrap();
+        let special = parse_xml_content(
+            "<EInvoice><EInvoiceType><LabelName>电子发票</LabelName></EInvoiceType>\
+             <GeneralOrSpecialVAT><LabelName>专票</LabelName></GeneralOrSpecialVAT></EInvoice>",
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(general.info.invoice_type, "vat-general");
+        assert_eq!(special.info.invoice_type, "vat-special");
     }
 }

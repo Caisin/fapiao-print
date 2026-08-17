@@ -184,14 +184,19 @@ fn name_value(line: &str) -> Option<&str> {
     None
 }
 
-fn detect_invoice_type(text: &str, is_ticket: bool, is_non_tax: bool) -> String {
+pub(crate) fn detect_invoice_type(text: &str, is_ticket: bool, is_non_tax: bool) -> String {
     if is_non_tax {
         return "nontax".to_string();
     }
-    if text.contains("增值税专用发票") || text.contains("专用发票") {
+    if text.contains("增值税专用发票")
+        || text.contains("专用发票")
+        || text.contains("增值税专票")
+        || text.contains("专票")
+    {
         return "vat-special".to_string();
     }
-    if text.contains("普通发票") || text.contains("电子普通发票") {
+    if text.contains("普通发票") || text.contains("电子普通发票") || text.contains("普票")
+    {
         return "vat-general".to_string();
     }
     if text.contains("铁路电子客票") {
