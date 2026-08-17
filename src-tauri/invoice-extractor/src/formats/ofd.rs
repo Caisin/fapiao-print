@@ -177,6 +177,7 @@ fn collect_tag_refs(xml: &str, output: &mut HashMap<String, Vec<u32>>) -> Result
         "Amount",
         "TaxRate",
         "TaxRateValue",
+        "TaxScheme",
     ];
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -227,13 +228,22 @@ fn merge_tagged_fields(
 ) {
     let get = |field: &str| -> String {
         refs.get(field)
-            .and_then(|ids| ids.iter().find_map(|id| object_text.get(id)))
-            .cloned()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| object_text.get(id))
+                    .map(String::as_str)
+                    .collect::<String>()
+            })
             .unwrap_or_default()
     };
     let tax_rate = get("TaxRate");
     let tax_rate = if tax_rate.is_empty() {
         get("TaxRateValue")
+    } else {
+        tax_rate
+    };
+    let tax_rate = if tax_rate.is_empty() {
+        get("TaxScheme")
     } else {
         tax_rate
     };
@@ -250,6 +260,18 @@ fn merge_tagged_fields(
         amount_tax: parse_number(&get("TaxInclusiveTotalAmount")).max(parse_number(&get("Amount"))),
         ..Default::default()
     };
+    if !tagged.tax_rate.is_empty() {
+        info.tax_rate = tagged.tax_rate.clone();
+    }
+    if tagged.amount_no_tax > 0.0 {
+        info.amount_no_tax = tagged.amount_no_tax;
+    }
+    if tagged.tax_amount > 0.0 {
+        info.tax_amount = tagged.tax_amount;
+    }
+    if tagged.amount_tax > 0.0 {
+        info.amount_tax = tagged.amount_tax;
+    }
     info.merge_missing(tagged);
 }
 
@@ -335,9 +357,14 @@ mod tests {
     fn resolves_custom_tag_object_references() {
         let content = r#"<ofd:Page xmlns:ofd="urn:ofd">
           <ofd:TextObject ID="42"><ofd:TextCode>无锡示例商贸有限公司</ofd:TextCode></ofd:TextObject>
+          <ofd:TextObject ID="43"><ofd:TextCode>¥</ofd:TextCode></ofd:TextObject>
+          <ofd:TextObject ID="44"><ofd:TextCode>233.02</ofd:TextCode></ofd:TextObject>
+          <ofd:TextObject ID="45"><ofd:TextCode>6%</ofd:TextCode></ofd:TextObject>
         </ofd:Page>"#;
         let tags = r#"<ofd:Tags xmlns:ofd="urn:ofd">
           <ofd:SellerName><ofd:ObjectRef>42</ofd:ObjectRef></ofd:SellerName>
+          <ofd:TaxExclusiveTotalAmount><ofd:ObjectRef>43</ofd:ObjectRef><ofd:ObjectRef>44</ofd:ObjectRef></ofd:TaxExclusiveTotalAmount>
+          <ofd:TaxScheme><ofd:ObjectRef>45</ofd:ObjectRef></ofd:TaxScheme>
         </ofd:Tags>"#;
         let mut objects = HashMap::new();
         let mut refs = HashMap::new();
@@ -346,5 +373,7 @@ mod tests {
         let mut info = crate::InvoiceInfo::default();
         merge_tagged_fields(&mut info, &refs, &objects);
         assert_eq!(info.seller_name, "无锡示例商贸有限公司");
+        assert_eq!(info.amount_no_tax, 233.02);
+        assert_eq!(info.tax_rate, "6%");
     }
 }

@@ -179,4 +179,18 @@ mod tests {
         assert_eq!(result.invoices[0].seller_name, "无锡示例商贸有限公司");
         assert_eq!(result.invoices[0].amount_tax, 113.0);
     }
+
+    #[test]
+    fn replaces_unknown_type_when_later_source_identifies_invoice() {
+        let mut incomplete = InvoiceInfo {
+            invoice_type: "unknown".to_string(),
+            ..Default::default()
+        };
+        incomplete.merge_missing(InvoiceInfo {
+            invoice_type: "vat-general".to_string(),
+            ..Default::default()
+        });
+
+        assert_eq!(incomplete.invoice_type, "vat-general");
+    }
 }

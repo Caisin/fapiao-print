@@ -187,6 +187,15 @@ mod tests {
     }
 
     #[test]
+    fn does_not_invent_zero_rate_without_tax_evidence() {
+        let page = RecognitionPage::from_text("电子发票（普通发票）\n价税合计（小写）¥247.00");
+
+        let info = parse_recognition_page(&page, 0, "pdf-text", false);
+
+        assert!(info.tax_rate.is_empty());
+    }
+
+    #[test]
     fn preserves_multiple_tax_rates_in_document_order() {
         let page = RecognitionPage::from_text(
             "电子发票（普通发票）\n项目一 13%\n项目二 免税\n项目三 1%\n价税合计（小写）¥113.00",

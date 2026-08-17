@@ -101,7 +101,7 @@ fn extract_tax_rate(text: &str, amounts: &Amounts, is_ticket: bool, is_non_tax: 
         && !is_ticket
         && !is_non_tax
         && amounts.amount_no_tax > 0.0
-        && amounts.tax_amount >= 0.0
+        && amounts.tax_amount > 0.0
     {
         let percent = amounts.tax_amount / amounts.amount_no_tax * 100.0;
         if percent <= 100.0 {

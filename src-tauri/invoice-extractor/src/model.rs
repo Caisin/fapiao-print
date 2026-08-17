@@ -123,12 +123,14 @@ impl InvoiceInfo {
         }
         fill_string!(invoice_no);
         fill_string!(invoice_date);
-        fill_string!(invoice_type);
         fill_string!(buyer_name);
         fill_string!(buyer_credit_code);
         fill_string!(seller_name);
         fill_string!(seller_credit_code);
         fill_string!(tax_rate);
+        if self.invoice_type.is_empty() || self.invoice_type == "unknown" {
+            self.invoice_type = other.invoice_type;
+        }
         if self.amount_tax <= 0.0 {
             self.amount_tax = other.amount_tax;
         }
