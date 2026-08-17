@@ -81,6 +81,13 @@ function createFileObj(opts) {
     buyerName: opts.buyerName || '',
     buyerCreditCode: opts.buyerCreditCode || '',
     invoiceType: opts.invoiceType || '',
+    taxRate: opts.taxRate || '',
+    amountUppercase: opts.amountUppercase || '',
+    invoiceClerk: opts.invoiceClerk || '',
+    extractionSource: opts.extractionSource || '',
+    amountValidation: opts.amountValidation || null,
+    lineItems: Array.isArray(opts.lineItems) ? opts.lineItems : [],
+    pageIndex: opts.pageIndex != null ? opts.pageIndex : 0,
     _ocrText: opts._ocrText || '',
     _isTicket: opts._isTicket || false,
     _loading: opts._loading || false,
@@ -569,6 +576,56 @@ async function triggerUpload() {
   }
 }
 
+async function triggerDirectoryUpload() {
+  if (!isTauri || !invoke) {
+    toast('导入文件夹仅支持桌面版');
+    return;
+  }
+  try {
+    var selected = await invoke('plugin:dialog|open', {
+      options: { directory: true, multiple: false, title: '选择发票文件夹' }
+    });
+    var directoryPath = typeof selected === 'string'
+      ? selected
+      : (Array.isArray(selected) && selected.length > 0 ? selected[0] : '');
+    if (!directoryPath) return;
+
+    toastLoading('正在递归扫描并解析发票...');
+    var batch = await extractInvoiceDirectory(directoryPath, {
+      useOcr: !!(hasOcr && S.feat.ocrEnabled),
+      ocrPrecision: S.ocrPrecision || 'standard',
+      includeRawText: true
+    });
+    var extractedByPath = {};
+    var paths = [];
+    var addPath = function(path) {
+      if (!path || !/\.(?:pdf|jpe?g|png|bmp|webp|tiff?|ofd|xml)$/i.test(path)) return;
+      if (paths.indexOf(path) < 0) paths.push(path);
+    };
+    (batch.files || []).forEach(function(fileResult) {
+      addPath(fileResult.filePath);
+      extractedByPath[fileResult.filePath] = fileResult;
+    });
+    (batch.errors || []).forEach(function(error) { addPath(error.filePath); });
+    paths.sort(function(left, right) { return left < right ? -1 : (left > right ? 1 : 0); });
+    if (paths.length === 0) {
+      hideToast();
+      toast('所选文件夹及其子目录中没有支持的发票文件');
+      return;
+    }
+
+    var incompleteCount = (batch.files || []).filter(function(file) { return !file.success; }).length;
+    var summary = '已递归导入 ' + paths.length + ' 个文件';
+    if (incompleteCount > 0) summary += '，' + incompleteCount + ' 个信息不完整';
+    if (batch.failedFileCount > 0) summary += '，' + batch.failedFileCount + ' 个解析失败';
+    await processFilesIncremental(paths, extractedByPath, summary);
+  } catch (err) {
+    console.error('Directory import error:', err);
+    hideToast();
+    toast('导入文件夹失败: ' + String(err), 4000);
+  }
+}
+
 async function handleFileInput(fl) {
   if (!fl || !fl.length) return;
   await processFiles(Array.from(fl));
@@ -792,7 +849,7 @@ async function processFiles(files) {
 
 // Incremental loading: read files one-by-one, render in small batches.
 // Strategy: skeleton placeholders (stable layout) + parallel background load + batch render every 3 files.
-async function processFilesIncremental(paths) {
+async function processFilesIncremental(paths, extractedByPath, completionMessage) {
   var total = paths.length;
   var added = 0;
   var startTime = Date.now();
@@ -834,7 +891,7 @@ async function processFilesIncremental(paths) {
     var path = paths[pi];
     var fd = fileDataMap[path];
     if (!fd) return Promise.resolve(null);
-    return loadFileFromDataUrlFast(fd).catch(function(err) {
+    return loadFileFromDataUrlFast(fd, extractedByPath && extractedByPath[path]).catch(function(err) {
       console.error('Load error:', fd.name, err);
       return null;
     });
@@ -901,7 +958,7 @@ async function processFilesIncremental(paths) {
     var elapsed = Date.now() - startTime;
     var minToastDelay = Math.max(300, 800 - elapsed);
     if (added > 0) {
-      var doneMsg = '已加载 ' + added + ' 张发票';
+      var doneMsg = completionMessage || ('已加载 ' + added + ' 张发票');
       setTimeout(function() { toast(doneMsg, 2500); }, minToastDelay);
     } else {
       toast('文件加载失败');
@@ -1219,7 +1276,49 @@ function applyPdfTextToResults(results, pdfPath) {
   });
 }
 
-function buildPdfResults(pages, id, name, size, filePath) {
+function findExtractedInvoice(fileResult, pageIndex) {
+  if (!fileResult || !Array.isArray(fileResult.invoices)) return null;
+  for (var i = 0; i < fileResult.invoices.length; i++) {
+    if (fileResult.invoices[i].pageIndex === pageIndex) return fileResult.invoices[i];
+  }
+  return fileResult.invoices[pageIndex] || null;
+}
+
+function applyExtractedInvoiceInfo(fileObj, info) {
+  if (!fileObj || !info) return;
+  fileObj.amountTax = info.amountTax || 0;
+  fileObj.amountNoTax = info.amountNoTax || 0;
+  fileObj.taxAmount = info.taxAmount || 0;
+  fileObj.amount = fileObj.amountTax || fileObj.amountNoTax || info.amount || 0;
+  fileObj.invoiceNo = info.invoiceNo || '';
+  fileObj.invoiceDate = info.invoiceDate || '';
+  fileObj.invoiceType = info.invoiceType || '';
+  fileObj.buyerName = info.buyerName || '';
+  fileObj.buyerCreditCode = info.buyerCreditCode || '';
+  fileObj.sellerName = info.sellerName || '';
+  fileObj.sellerCreditCode = info.sellerCreditCode || '';
+  fileObj.taxRate = info.taxRate || '';
+  fileObj.amountUppercase = info.amountUppercase || '';
+  fileObj.invoiceClerk = info.invoiceClerk || '';
+  fileObj.extractionSource = info.source || '';
+  fileObj.amountValidation = info.amountValidation || null;
+  fileObj.lineItems = Array.isArray(info.lineItems) ? info.lineItems.slice() : [];
+  fileObj.pageIndex = info.pageIndex != null ? info.pageIndex : fileObj.pageIndex;
+  fileObj._ocrText = info.rawText || '';
+  fileObj._isTicket = !!info.isTicket;
+  fileObj._isNonTax = !!info.isNonTax;
+  fileObj._amtValidationFail = info.amountValidation || null;
+  fileObj._directoryExtracted = true;
+  fileObj._pdfTextExtracted = (info.source || '').indexOf('pdf-text') >= 0;
+}
+
+function applyExtractedFileResult(fileObj, fileResult, pageIndex) {
+  if (!fileObj || !fileResult) return;
+  applyExtractedInvoiceInfo(fileObj, findExtractedInvoice(fileResult, pageIndex));
+  fileObj._extractionWarnings = Array.isArray(fileResult.warnings) ? fileResult.warnings.slice() : [];
+}
+
+function buildPdfResults(pages, id, name, size, filePath, extractedFileResult) {
   var results = [];
   for (var p = 0; p < pages.length; p++) {
     var pg = pages[p];
@@ -1231,6 +1330,7 @@ function buildPdfResults(pages, id, name, size, filePath) {
       renderDpi: pg.renderDpi || PDF_RENDER_DPI,
       pdfPath: filePath, pdfPageIdx: p
     });
+    applyExtractedFileResult(fileObj, extractedFileResult, p);
     results.push(fileObj);
   }
   return results;
@@ -1247,7 +1347,7 @@ function loadPdfImages(results) {
   }));
 }
 
-function loadFileFromDataUrlFast(fd) {
+function loadFileFromDataUrlFast(fd, extractedFileResult) {
   var name = fd.name, dataUrl = fd.dataUrl, size = fd.size, ext = fd.ext, filePath = fd.path;
   return new Promise(function(resolve) {
     var id = 'f' + Date.now() + Math.random().toString(36).slice(2);
@@ -1258,15 +1358,16 @@ function loadFileFromDataUrlFast(fd) {
         var renderLabel = _winrtPdfAvailable ? (isMacOS ? 'Core Graphics' : 'WinRT') : 'PDFium';
         invoke(renderFn, { pdfPath: filePath, dpi: PDF_PREVIEW_DPI, useJpeg: true }).then(async function(pages) {
           if (pages && pages.length > 0) {
-            var results = buildPdfResults(pages, id, name, size, filePath);
+            var results = buildPdfResults(pages, id, name, size, filePath, extractedFileResult);
             resolve(results.length === 1 ? results[0] : results);
 
             loadPdfImages(results);
-            applyPdfTextToResults(results, filePath);
-
-            results.forEach(function(r) {
-              if (S.feat.ocrEnabled) applyOcrAsync(r, r.previewUrl);
-            });
+            if (!extractedFileResult) {
+              applyPdfTextToResults(results, filePath);
+              results.forEach(function(r) {
+                if (S.feat.ocrEnabled) applyOcrAsync(r, r.previewUrl);
+              });
+            }
             return;
           }
           toast('PDF 渲染结果为空: ' + name);
@@ -1278,15 +1379,16 @@ function loadFileFromDataUrlFast(fd) {
             console.warn('[PDF] WinRT failed, trying PDFium fallback...');
             invoke('render_pdf_pages_pdfium', { pdfPath: filePath, dpi: PDF_PREVIEW_DPI, useJpeg: true }).then(async function(pages2) {
               if (pages2 && pages2.length > 0) {
-                var results2 = buildPdfResults(pages2, id, name, size, filePath);
+                var results2 = buildPdfResults(pages2, id, name, size, filePath, extractedFileResult);
                 resolve(results2.length === 1 ? results2[0] : results2);
 
                 loadPdfImages(results2);
-                applyPdfTextToResults(results2, filePath);
-
-                results2.forEach(function(r) {
-                  if (S.feat.ocrEnabled) applyOcrAsync(r, r.previewUrl);
-                });
+                if (!extractedFileResult) {
+                  applyPdfTextToResults(results2, filePath);
+                  results2.forEach(function(r) {
+                    if (S.feat.ocrEnabled) applyOcrAsync(r, r.previewUrl);
+                  });
+                }
                 return;
               }
               toast('PDF 渲染失败: ' + name);
@@ -1347,9 +1449,10 @@ function loadFileFromDataUrlFast(fd) {
           // Mark as OFD source for PDF generation (FlateDecode)
           _ofdPage: true
         });
+        applyExtractedFileResult(fileObj, extractedFileResult, 0);
         resolve(fileObj);
         // Fallback OCR: OFD XML 未提取到有效数据时，以 OCR 作补充
-        if (S.feat.ocrEnabled && !info.amountTax && !info.amountNoTax && !info.sellerName) {
+        if (!extractedFileResult && S.feat.ocrEnabled && !info.amountTax && !info.amountNoTax && !info.sellerName) {
           applyOcrAsync(fileObj, payload.pngUrl);
         }
       }).catch(function(err) {
@@ -1364,10 +1467,12 @@ function loadFileFromDataUrlFast(fd) {
               var fileObj = createFileObj({
                 id: id, name: fd0.name, size: fd0.size, type: fd0.ext,
                 previewUrl: fd0.dataUrl, img: img,
-                ow: fd0.origW || 0, oh: fd0.origH || 0
+                ow: fd0.origW || 0, oh: fd0.origH || 0,
+                filePath: filePath || ''
               });
+              applyExtractedFileResult(fileObj, extractedFileResult, 0);
               resolve(fileObj);
-              if (S.feat.ocrEnabled) applyOcrAsync(fileObj, fd0.dataUrl);
+              if (!extractedFileResult && S.feat.ocrEnabled) applyOcrAsync(fileObj, fd0.dataUrl);
             };
             img.onerror = function() { resolve(null); };
           } else {
@@ -1382,6 +1487,15 @@ function loadFileFromDataUrlFast(fd) {
       resolve(null);
     }
     // XML 数电票: structured data only, no visual layout
+    else if (ext === 'xml' && isTauri && invoke && filePath && extractedFileResult) {
+      var extractedXml = createFileObj({
+        id: id, name: name, size: size, type: 'xml', filePath: filePath,
+        ow: 0, oh: 0, _xmlInvoice: true
+      });
+      applyExtractedFileResult(extractedXml, extractedFileResult, 0);
+      resolve(extractedXml);
+      return;
+    }
     else if (ext === 'xml' && isTauri && invoke && filePath) {
       invoke('parse_xml_invoice', { xmlPath: filePath }).then(function(info) {
         var fileObj = createFileObj({
@@ -1427,9 +1541,10 @@ function loadFileFromDataUrlFast(fd) {
           ow: fd.origW || 0,
           oh: fd.origH || 0
         });
+        applyExtractedFileResult(result, extractedFileResult, 0);
         resolve(result);
         // Background OCR — pass filePath to skip base64 round-trip
-        if (S.feat.ocrEnabled) applyOcrAsync(result, dataUrl);
+        if (!extractedFileResult && S.feat.ocrEnabled) applyOcrAsync(result, dataUrl);
       };
       img.onerror = function() { toast('图片加载失败: ' + name); resolve(null); };
     }
@@ -1554,7 +1669,7 @@ function renderFileList() {
         '<div class="file-meta-right">' +
         '<button class="ib sort-btn' + (i === 0 ? ' disabled' : '') + '" onclick="moveFile(' + i + ',-1)" title="上移">\u25B2</button>' +
         '<button class="ib sort-btn' + (i === S.files.length - 1 ? ' disabled' : '') + '" onclick="moveFile(' + i + ',1)" title="下移">\u25BC</button>' +
-        ocrBtnHtml + '<button class="ib" onclick="rotFile(' + i + ')" title="旋转90°">\u21BB</button><button class="ib danger" onclick="rmFile(' + i + ')">\u2715</button></div>';
+        ocrBtnHtml + '<button class="ib" onclick="openInvModal(' + i + ')" title="发票详情">ⓘ</button><button class="ib" onclick="rotFile(' + i + ')" title="旋转90°">\u21BB</button><button class="ib danger" onclick="rmFile(' + i + ')">\u2715</button></div>';
     return '<div class="' + cls + '" data-idx="' + i + '" data-printed="' + (f._printed ? '1' : '0') + '"' + hideStyle + ' onclick="clickFileItem(' + i + ',event)" ondblclick="openInvModal(' + i + ')">' +
       '<div class="file-check ' + (f.checked ? 'checked' : '') + '" onclick="togCheck(' + i + ')"></div>' +
       '<div class="file-thumb">' + thumbContent + '<div class="type-badge">' + typeBadgeText + '</div></div>' +
@@ -1794,6 +1909,87 @@ function updateAmountSummary() {
 }
 
 // Invoice modal
+function invoiceTypeLabel(type) {
+  var labels = {
+    'vat-general': '增值税普通发票',
+    'vat-special': '增值税专用发票',
+    ticket: '票据',
+    nontax: '非税票据',
+    unknown: '未知'
+  };
+  return labels[type] || type || '—';
+}
+
+function extractionSourceLabel(source) {
+  var labels = {
+    'pdf-text': 'PDF 文字层',
+    'pdf-text+ocr': 'PDF 文字层 + OCR',
+    ocr: 'OCR',
+    ofd: 'OFD 结构化数据',
+    xml: 'XML 结构化数据',
+    none: '未识别'
+  };
+  return labels[source] || source || '—';
+}
+
+function detailNumber(value, money) {
+  if (value === null || value === undefined || value === '') return '—';
+  var number = Number(value);
+  if (!isFinite(number)) return escHtml(String(value));
+  return money ? number.toFixed(2) : String(number);
+}
+
+function buildLineItemsHtml(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return '<div class="invoice-detail-empty">未提取到商品明细</div>';
+  }
+  var rows = items.map(function(item, index) {
+    return '<tr class="' + (item.isDiscount ? 'discount-row' : '') + '">' +
+      '<td class="line-seq">' + (index + 1) + '</td>' +
+      '<td class="line-project" title="' + escHtml(item.projectName || '') + '">' + escHtml(item.projectName || '—') + '</td>' +
+      '<td>' + escHtml(item.specification || '—') + '</td>' +
+      '<td>' + escHtml(item.unit || '—') + '</td>' +
+      '<td class="line-number">' + detailNumber(item.quantity, false) + '</td>' +
+      '<td class="line-number">' + detailNumber(item.unitPrice, false) + '</td>' +
+      '<td class="line-number">' + detailNumber(item.amount, true) + '</td>' +
+      '<td>' + escHtml(item.taxRate || '—') + '</td>' +
+      '<td class="line-number">' + detailNumber(item.taxAmount, true) + '</td>' +
+      '<td class="line-number">' + detailNumber(item.amountTax, true) + '</td>' +
+      '</tr>';
+  }).join('');
+  return '<div class="invoice-lines-wrap"><table class="invoice-lines-table">' +
+    '<thead><tr><th>#</th><th>项目名称</th><th>规格型号</th><th>单位</th><th>数量</th><th>单价</th><th>金额</th><th>税率</th><th>税额</th><th>含税</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table></div>';
+}
+
+function buildExtractorDetailsHtml(f) {
+  var validation = f.amountValidation
+    ? '异常：含税 ¥' + detailNumber(f.amountValidation.amountTax, true) +
+      '，不含税 ¥' + detailNumber(f.amountValidation.amountNoTax, true) +
+      '，税额 ¥' + detailNumber(f.amountValidation.taxAmount, true)
+    : '通过或无需校验';
+  var warnings = Array.isArray(f._extractionWarnings) && f._extractionWarnings.length > 0
+    ? '<div class="invoice-detail-warnings">' + f._extractionWarnings.map(function(warning) { return escHtml(warning); }).join('<br>') + '</div>'
+    : '';
+  var field = function(label, value, wide) {
+    var display = value || '—';
+    return '<div class="invoice-detail-field' + (wide ? ' wide' : '') + '"><span>' + label + '</span><strong title="' + escHtml(display) + '">' + escHtml(display) + '</strong></div>';
+  };
+  return '<div class="invoice-detail-section">' +
+    '<div class="invoice-detail-title">解析详情</div>' +
+    '<div class="invoice-detail-grid">' +
+      field('识别来源', extractionSourceLabel(f.extractionSource)) +
+      field('发票类型', invoiceTypeLabel(f.invoiceType)) +
+      field('税率', f.taxRate || '—') +
+      field('开票人', f.invoiceClerk || '—') +
+      field('金额校验', validation, true) +
+      field('大写金额', f.amountUppercase || '—', true) +
+    '</div>' + warnings +
+    '<div class="invoice-detail-title line-title">商品明细 <span>' + (Array.isArray(f.lineItems) ? f.lineItems.length : 0) + ' 条</span></div>' +
+    buildLineItemsHtml(f.lineItems) +
+  '</div>';
+}
+
 function openInvModal(i) {
   if (S.files[i]._loading) return; // Don't open modal for loading placeholders
   S.editIdx = i; var f = S.files[i];
@@ -1816,6 +2012,7 @@ function openInvModal(i) {
     mRA('购方代码', '<input type="text" id="mBuyerCreditCode" value="' + escHtml(f.buyerCreditCode || '') + '" placeholder="自动识别" class="mono-input">') +
     mRA('销售方', '<input type="text" id="mSeller" value="' + escHtml(f.sellerName || '') + '" placeholder="自动识别">') +
     mRA('信用代码', '<input type="text" id="mCreditCode" value="' + escHtml(f.sellerCreditCode || '') + '" placeholder="自动识别" class="mono-input">') +
+    buildExtractorDetailsHtml(f) +
     mRF('旋转', '<select id="mRot" style="width:140px;flex:none"><option value="0" ' + (f.rotation === 0 ? 'selected' : '') + '>不旋转</option><option value="90" ' + (f.rotation === 90 ? 'selected' : '') + '>90\u00B0</option><option value="180" ' + (f.rotation === 180 ? 'selected' : '') + '>180\u00B0</option><option value="270" ' + (f.rotation === 270 ? 'selected' : '') + '>270\u00B0</option></select>') +
     '<div style="border-top:1px dashed var(--border);margin-top:4px;padding-top:8px">' +
     '<div style="font-size:11px;font-weight:700;color:var(--text-secondary);margin-bottom:6px">🎯 单票调整</div>' +

@@ -303,6 +303,7 @@
     <div class="toolbar">
       <div class="toolbar-group">
         <button class="btn btn-sm btn-primary" onclick="triggerUpload()" title="添加发票">➕ 添加</button>
+        <button class="btn btn-sm" onclick="triggerDirectoryUpload()" title="递归导入文件夹中的发票">📂 文件夹</button>
       </div>
       <div class="toolbar-sep"></div>
       <div class="toolbar-group">
@@ -349,7 +350,10 @@
         <div class="empty-icon">📄</div>
         <div style="font-size:17px;font-weight:700;color:var(--text-secondary)">尚未添加发票</div>
         <div style="font-size:13px">拖入文件或点击添加<br>Ctrl+O 添加 | Ctrl+P 打印 | ←→ 翻页</div>
-        <button class="btn btn-primary" style="padding:10px 24px;font-size:15px" onclick="triggerUpload()">➕ 添加发票</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+          <button class="btn btn-primary" style="padding:10px 24px;font-size:15px" onclick="triggerUpload()">➕ 添加发票</button>
+          <button class="btn" style="padding:10px 24px;font-size:15px" onclick="triggerDirectoryUpload()">📂 导入文件夹</button>
+        </div>
       </div>
       <div id="previewPages" style="display:none"></div>
     </div>
@@ -372,7 +376,7 @@
 </div>
 
 <!-- Invoice options modal -->
-<div class="modal-bg hidden" id="invModal" onclick="closeInvModal()"><div class="modal" onclick="event.stopPropagation()"><div class="modal-title">📝 发票选项</div><div class="modal-body" id="invModalBody"></div><div class="modal-actions"><button class="btn" onclick="closeInvModal()">取消</button><button class="btn btn-primary" onclick="confirmInvModal()">确认</button></div></div></div>
+<div class="modal-bg hidden" id="invModal" onclick="closeInvModal()"><div class="modal invoice-modal" onclick="event.stopPropagation()"><div class="modal-title">发票详情与选项</div><div class="modal-body" id="invModalBody"></div><div class="modal-actions"><button class="btn" onclick="closeInvModal()">取消</button><button class="btn btn-primary" onclick="confirmInvModal()">确认</button></div></div></div>
 
 <!-- Print confirm modal -->
 <div class="modal-bg hidden" id="printConfirmModal" onclick="closePrintConfirm()"><div class="modal print-confirm-modal" onclick="event.stopPropagation()"><div class="modal-title">🖨 确认打印</div><div class="modal-body" id="printConfirmBody"></div><div class="modal-actions"><button class="btn" onclick="closePrintConfirm()">取消</button><button class="btn btn-success" id="printConfirmBtn" onclick="confirmPrint()">确认打印</button></div></div></div>
