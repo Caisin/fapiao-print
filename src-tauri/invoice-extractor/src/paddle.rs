@@ -80,20 +80,35 @@ impl<R: PdfPageRenderer> PaddleOcrBackend<R> {
         let scale_y = original_height as f64 / resized_height as f64;
 
         let engine = self.engine()?;
-        let results = engine
+        let ocr_engine = engine
             .as_ref()
-            .ok_or_else(|| "OCR 引擎未初始化".to_string())?
+            .ok_or_else(|| "OCR 引擎未初始化".to_string())?;
+        let results = ocr_engine
             .recognize(&image)
             .map_err(|error| format!("PaddleOCR 识别失败: {error:?}"))?;
 
         let mut lines = Vec::with_capacity(results.len());
         let mut text = Vec::with_capacity(results.len());
         for result in results {
-            let line_text = result.text.trim().to_string();
+            let mut line_text = result.text.trim().to_string();
             if line_text.is_empty() {
                 continue;
             }
             let rect = result.bbox.rect;
+            if precision != "fast" && should_refine_name_line(&line_text) {
+                if let Some(refined) = refine_name_line(
+                    ocr_engine,
+                    &image,
+                    rect.left(),
+                    rect.top(),
+                    rect.right(),
+                    rect.bottom(),
+                ) {
+                    if refined.chars().count() > line_text.chars().count() {
+                        line_text = refined;
+                    }
+                }
+            }
             text.push(line_text.clone());
             lines.push(RecognitionLine {
                 words: vec![RecognitionWord {
@@ -139,6 +154,53 @@ impl<R: PdfPageRenderer> PaddleOcrBackend<R> {
         }
         Ok(engine)
     }
+}
+
+fn should_refine_name_line(text: &str) -> bool {
+    text.contains("名称")
+        && ["公司", "企业", "中心", "商行", "商店", "经营部"]
+            .iter()
+            .any(|suffix| text.contains(suffix))
+}
+
+fn refine_name_line(
+    engine: &OcrEngine,
+    image: &DynamicImage,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> Option<String> {
+    let width = (right - left).max(1) as u32;
+    let height = (bottom - top).max(1) as u32;
+    let pad_x = (width / 20).max(8);
+    let pad_y = (height / 2).max(8);
+    let x = left.max(0) as u32;
+    let y = top.max(0) as u32;
+    let x = x.saturating_sub(pad_x);
+    let y = y.saturating_sub(pad_y);
+    let crop_width = width
+        .saturating_add(pad_x * 2)
+        .min(image.width().saturating_sub(x));
+    let crop_height = height
+        .saturating_add(pad_y * 2)
+        .min(image.height().saturating_sub(y));
+    if crop_width == 0 || crop_height == 0 {
+        return None;
+    }
+    let crop = image.crop_imm(x, y, crop_width, crop_height).resize_exact(
+        crop_width.saturating_mul(2),
+        crop_height.saturating_mul(2),
+        image::imageops::FilterType::Lanczos3,
+    );
+    let candidate = engine
+        .recognize(&crop)
+        .ok()?
+        .into_iter()
+        .map(|result| result.text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<String>();
+    should_refine_name_line(&candidate).then_some(candidate)
 }
 
 impl<R: PdfPageRenderer> OcrBackend for PaddleOcrBackend<R> {

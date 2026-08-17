@@ -52,6 +52,7 @@ pub(crate) fn extract_identity(text: &str, page: &RecognitionPage) -> IdentityFi
         is_non_tax,
     };
 
+    fill_unqualified_names(&mut result, text);
     fill_from_coordinates(&mut result, page);
     fill_credit_codes(&mut result, &compact_text, page);
     fill_names_from_code_context(&mut result, text);
@@ -140,6 +141,28 @@ fn capture_code(text: &str, labels: &[&str]) -> String {
     String::new()
 }
 
+fn fill_unqualified_names(result: &mut IdentityFields, text: &str) {
+    let names = text
+        .lines()
+        .map(compact)
+        .filter_map(|line| {
+            line.strip_prefix("名称:")
+                .map(clean_name)
+                .filter(|name| !name.is_empty())
+        })
+        .collect::<Vec<_>>();
+    if clean_name(&result.buyer_name).is_empty() {
+        result.buyer_name = names.first().cloned().unwrap_or_default();
+    }
+    if clean_name(&result.seller_name).is_empty() {
+        result.seller_name = names
+            .iter()
+            .find(|name| **name != result.buyer_name)
+            .cloned()
+            .unwrap_or_default();
+    }
+}
+
 fn fill_from_coordinates(result: &mut IdentityFields, page: &RecognitionPage) {
     if page.img_w == 0 || page.img_h == 0 {
         return;
@@ -223,14 +246,14 @@ fn fill_names_from_code_context(result: &mut IdentityFields, text: &str) {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
 
-    if result.buyer_name.is_empty() {
+    if clean_name(&result.buyer_name).is_empty() {
         result.buyer_name = name_before_code(&lines, &result.buyer_credit_code);
     }
-    if result.seller_name.is_empty() {
+    if clean_name(&result.seller_name).is_empty() {
         result.seller_name = name_before_code(&lines, &result.seller_credit_code);
     }
 
-    if result.buyer_name.is_empty() || result.seller_name.is_empty() {
+    if clean_name(&result.buyer_name).is_empty() || clean_name(&result.seller_name).is_empty() {
         let company_names = lines
             .iter()
             .filter_map(|line| {
@@ -238,10 +261,10 @@ fn fill_names_from_code_context(result: &mut IdentityFields, text: &str) {
                 (!name.is_empty() && looks_like_company_name(&name)).then_some(name)
             })
             .collect::<Vec<_>>();
-        if result.buyer_name.is_empty() {
+        if clean_name(&result.buyer_name).is_empty() {
             result.buyer_name = company_names.first().cloned().unwrap_or_default();
         }
-        if result.seller_name.is_empty() {
+        if clean_name(&result.seller_name).is_empty() {
             result.seller_name = company_names
                 .iter()
                 .find(|name| **name != result.buyer_name)

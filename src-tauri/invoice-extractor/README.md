@@ -59,8 +59,11 @@ cargo run \
   --features paddle-ocr \
   --example extract_with_ocr -- \
   /absolute/path/to/invoice.jpg \
-  src-tauri/models
+  src-tauri/models \
+  precise
 ```
+
+模型目录和识别精度均可省略；精度支持 `fast`、`standard`、`precise`。
 
 模型目录必须包含：
 

@@ -176,6 +176,47 @@ mod tests {
     }
 
     #[test]
+    fn maps_unqualified_ocr_name_lines_before_table_headers() {
+        let page = RecognitionPage {
+            text: "电子发票（普通发票）\n名称：长沙百寻络科技有限公司\n\
+                   名称:长沙熙之棠餐饮管理有限公司\n\
+                   统一社会信用代码/纳税人识别号：91430104MACJBWXN1K\n\
+                   统一社会信用代码/纳税人识别号：91430104MA4QLJ16X6\n\
+                   税额\n单位\n数量\n单价\n项目名称\n金额\n6%"
+                .to_string(),
+            lines: vec![
+                crate::RecognitionLine {
+                    words: vec![crate::RecognitionWord {
+                        text: "名称：长沙百寻络科技有限公司".to_string(),
+                        x: 20.0,
+                        y: 100.0,
+                        w: 300.0,
+                        h: 20.0,
+                    }],
+                    confidence: 0.9,
+                },
+                crate::RecognitionLine {
+                    words: vec![crate::RecognitionWord {
+                        text: "单位".to_string(),
+                        x: 100.0,
+                        y: 130.0,
+                        w: 40.0,
+                        h: 20.0,
+                    }],
+                    confidence: 0.9,
+                },
+            ],
+            img_w: 1000,
+            img_h: 700,
+        };
+
+        let info = parse_recognition_page(&page, 0, "ocr", false);
+
+        assert_eq!(info.buyer_name, "长沙百寻络科技有限公司");
+        assert_eq!(info.seller_name, "长沙熙之棠餐饮管理有限公司");
+    }
+
+    #[test]
     fn derives_tax_rate_when_text_does_not_include_it() {
         let page = RecognitionPage::from_text(
             "电子发票（普通发票）\n合计 ¥100.00 ¥13.00\n价税合计（小写）¥113.00",
