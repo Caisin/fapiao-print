@@ -3720,14 +3720,31 @@ pub fn check_ocr_available() -> bool { false }
 // White Edge Trimming
 // =====================================================
 
-/// Trim white edges from an image.
-/// `threshold`: pixels where R, G, B are all >= threshold are considered "white".
-/// Returns the cropped image with 5px padding.
-pub fn trim_white_edges(img: &image::DynamicImage, threshold: u8) -> image::DynamicImage {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageTrimBounds {
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+}
+
+/// Find the visible content bounds of an image.
+/// Pixels where R, G, B are all >= `threshold` are considered white.
+/// The returned bounds include 5px padding and use top-left image coordinates.
+pub fn find_white_trim_bounds(img: &image::DynamicImage, threshold: u8) -> ImageTrimBounds {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     if w == 0 || h == 0 {
-        return img.clone();
+        return ImageTrimBounds {
+            left: 0,
+            top: 0,
+            width: w,
+            height: h,
+            source_width: w,
+            source_height: h,
+        };
     }
 
     // Find top
@@ -3779,7 +3796,14 @@ pub fn trim_white_edges(img: &image::DynamicImage, threshold: u8) -> image::Dyna
     }
 
     if top >= bottom || left >= right {
-        return img.clone();
+        return ImageTrimBounds {
+            left: 0,
+            top: 0,
+            width: w,
+            height: h,
+            source_width: w,
+            source_height: h,
+        };
     }
 
     // Add 5px padding, clamp to image bounds
@@ -3791,8 +3815,40 @@ pub fn trim_white_edges(img: &image::DynamicImage, threshold: u8) -> image::Dyna
 
     let cw = right - left + 1;
     let ch = bottom - top + 1;
-    let cropped = image::imageops::crop_imm(&rgba, left, top, cw, ch);
-    image::DynamicImage::from(cropped.to_image())
+    ImageTrimBounds {
+        left,
+        top,
+        width: cw,
+        height: ch,
+        source_width: w,
+        source_height: h,
+    }
+}
+
+/// Trim white edges from an image and return the exact source-image bounds used.
+pub fn trim_white_edges_with_bounds(
+    img: &image::DynamicImage,
+    threshold: u8,
+) -> (image::DynamicImage, ImageTrimBounds) {
+    let bounds = find_white_trim_bounds(img, threshold);
+    if bounds.width == bounds.source_width && bounds.height == bounds.source_height {
+        return (img.clone(), bounds);
+    }
+
+    let rgba = img.to_rgba8();
+    let cropped = image::imageops::crop_imm(
+        &rgba,
+        bounds.left,
+        bounds.top,
+        bounds.width,
+        bounds.height,
+    );
+    (image::DynamicImage::from(cropped.to_image()), bounds)
+}
+
+/// Trim white edges from an image.
+pub fn trim_white_edges(img: &image::DynamicImage, threshold: u8) -> image::DynamicImage {
+    trim_white_edges_with_bounds(img, threshold).0
 }
 
 // =====================================================
@@ -3888,6 +3944,19 @@ pub struct FileSpec {
     /// The frontend stores this as fileObj._pdfPageIdx.
     #[serde(default)]
     pub pdf_page_idx: Option<u32>,
+    /// Normalized visible bounds within the PDF page, in top-left coordinates.
+    /// Only used by the vector PDF passthrough path.
+    #[serde(default)]
+    pub crop: Option<CropSpec>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct CropSpec {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// A slot on a page — which file (if any) goes here, and its rotation.
@@ -4507,8 +4576,10 @@ fn decode_images(
                 img = apply_exif_orientation(img, exif_orientation);
             }
 
-            // Apply trim (global setting, not per-slot)
-            if trim {
+            // OFD pages already use their actual content bounds. Applying the
+            // global image trim here would make preview and print disagree.
+            let should_trim = trim && file_spec.source_type.as_deref() != Some("ofd-page");
+            if should_trim {
                 img = trim_white_edges(&img, 245);
             }
 
@@ -5599,6 +5670,114 @@ fn extract_page_as_form_xobject(
     Ok((xobj_id, effective_w, effective_h))
 }
 
+/// Wrap a page Form XObject in a cropped coordinate space without rasterizing it.
+/// `crop` is normalized against the visual page and uses top-left coordinates,
+/// while PDF Form coordinates use a bottom-left origin.
+fn wrap_form_xobject_with_crop(
+    output_doc: &mut lopdf::Document,
+    source_xobj_id: lopdf::ObjectId,
+    source_width: f32,
+    source_height: f32,
+    crop: CropSpec,
+) -> (lopdf::ObjectId, f32, f32) {
+    let Some((left_pt, bottom_pt, crop_width_pt, crop_height_pt)) =
+        normalized_crop_to_pdf_points(source_width, source_height, crop)
+    else {
+        return (source_xobj_id, source_width, source_height);
+    };
+
+    let mut xobjects = lopdf::Dictionary::new();
+    xobjects.set("Src", lopdf::Object::Reference(source_xobj_id));
+    let mut resources = lopdf::Dictionary::new();
+    resources.set("XObject", lopdf::Object::Dictionary(xobjects));
+
+    let mut dict = lopdf::Dictionary::new();
+    dict.set("Type", lopdf::Object::Name(b"XObject".to_vec()));
+    dict.set("Subtype", lopdf::Object::Name(b"Form".to_vec()));
+    dict.set("FormType", lopdf::Object::Integer(1));
+    dict.set(
+        "BBox",
+        lopdf::Object::Array(vec![
+            lopdf::Object::Real(0.0),
+            lopdf::Object::Real(0.0),
+            lopdf::Object::Real(crop_width_pt),
+            lopdf::Object::Real(crop_height_pt),
+        ]),
+    );
+    dict.set("Resources", lopdf::Object::Dictionary(resources));
+
+    let content = format!(
+        "q\n1 0 0 1 {:.4} {:.4} cm\n/Src Do\nQ\n",
+        -left_pt, -bottom_pt
+    )
+    .into_bytes();
+    let stream = lopdf::Stream::new(dict, content).with_compression(true);
+    let cropped_id = output_doc.add_object(lopdf::Object::Stream(stream));
+
+    (cropped_id, crop_width_pt, crop_height_pt)
+}
+
+fn normalized_crop_to_pdf_points(
+    source_width: f32,
+    source_height: f32,
+    crop: CropSpec,
+) -> Option<(f32, f32, f32, f32)> {
+    let left = crop.left.clamp(0.0, 1.0);
+    let top = crop.top.clamp(0.0, 1.0);
+    let width = crop.width.clamp(0.0, 1.0 - left);
+    let height = crop.height.clamp(0.0, 1.0 - top);
+
+    // Ignore invalid or effectively full-page crops.
+    if width <= 0.001
+        || height <= 0.001
+        || (left <= 0.001 && top <= 0.001 && width >= 0.998 && height >= 0.998)
+    {
+        return None;
+    }
+
+    let left_pt = left * source_width;
+    let bottom_pt = (1.0 - top - height).max(0.0) * source_height;
+    let crop_width_pt = width * source_width;
+    let crop_height_pt = height * source_height;
+    Some((left_pt, bottom_pt, crop_width_pt, crop_height_pt))
+}
+
+#[cfg(test)]
+mod trim_layout_tests {
+    use super::*;
+
+    #[test]
+    fn white_trim_bounds_include_padding() {
+        let mut image = image::RgbaImage::from_pixel(100, 80, image::Rgba([255, 255, 255, 255]));
+        for y in 20..60 {
+            for x in 30..70 {
+                image.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+
+        let bounds = find_white_trim_bounds(&image::DynamicImage::ImageRgba8(image), 245);
+        assert_eq!(bounds.left, 25);
+        assert_eq!(bounds.top, 15);
+        assert_eq!(bounds.width, 50);
+        assert_eq!(bounds.height, 50);
+    }
+
+    #[test]
+    fn normalized_top_left_crop_maps_to_pdf_bottom_left() {
+        let crop = CropSpec {
+            left: 0.1,
+            top: 0.2,
+            width: 0.5,
+            height: 0.4,
+        };
+        let points = normalized_crop_to_pdf_points(600.0, 800.0, crop).unwrap();
+        assert!((points.0 - 60.0).abs() < 0.01);
+        assert!((points.1 - 320.0).abs() < 0.01);
+        assert!((points.2 - 300.0).abs() < 0.01);
+        assert!((points.3 - 320.0).abs() < 0.01);
+    }
+}
+
 /// Per-slot adjustment data for passthrough rendering.
 struct SlotAdjustment {
     rotation: i32,
@@ -6074,10 +6253,22 @@ fn generate_pdf_passthrough(
                     .copied()
                     .ok_or_else(|| format!("PDF页面{}不存在 (文件: {})", page_idx_in_pdf + 1, pdf_path))?;
 
-                // Extract as Form XObject (vector quality preserved)
-                extract_page_as_form_xobject(
+                // Extract as Form XObject (vector quality preserved), then crop the
+                // visual page bounds detected from the preview without rasterizing.
+                let extracted = extract_page_as_form_xobject(
                     source, source_page_id, &mut output_doc, id_map
-                )?
+                )?;
+                if let Some(crop) = file.crop {
+                    wrap_form_xobject_with_crop(
+                        &mut output_doc,
+                        extracted.0,
+                        extracted.1,
+                        extracted.2,
+                        crop,
+                    )
+                } else {
+                    extracted
+                }
             } else {
                 // Image/OFD path → encode as FlateDecode (lossless) Image XObject
                 // FlateDecode matches the original printpdf behavior — no JPEG quality loss.

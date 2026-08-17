@@ -100,6 +100,9 @@ function buildLayoutRequest(files, settings) {
       if (fileObj._pdfPath) {
         spec.pdfPath = fileObj._pdfPath;
         spec.pdfPageIdx = fileObj._pdfPageIdx >= 0 ? fileObj._pdfPageIdx : null;
+        if (S.feat.trimWhite && fileObj.trimCrop) {
+          spec.crop = fileObj.trimCrop;
+        }
       }
       fileSpecs.push(spec);
     }

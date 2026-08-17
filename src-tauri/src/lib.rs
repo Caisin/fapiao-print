@@ -659,15 +659,25 @@ fn show_window(app: tauri::AppHandle) {
 // New Commands: Trim Image & Layout-based PDF Generation
 // =====================================================
 
-/// Trim white edges from an image (base64 data URL → trimmed base64 data URL)
-#[command]
-fn trim_image(data_url: String) -> Result<String, String> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrimImageResult {
+    data_url: String,
+    width: u32,
+    height: u32,
+    crop_left: f32,
+    crop_top: f32,
+    crop_width: f32,
+    crop_height: f32,
+}
+
+fn trim_image_impl(data_url: String) -> Result<(String, pdf_engine::ImageTrimBounds), String> {
     use base64::Engine;
     use std::io::Cursor;
 
     let img = pdf_engine::decode_base64_image(&data_url)
         .map_err(|e| format!("解码失败: {}", e))?;
-    let trimmed = pdf_engine::trim_white_edges(&img, 245);
+    let (trimmed, bounds) = pdf_engine::trim_white_edges_with_bounds(&img, 245);
 
     // Encode back to PNG base64
     let mut buf = Cursor::new(Vec::new());
@@ -675,7 +685,36 @@ fn trim_image(data_url: String) -> Result<String, String> {
         .map_err(|e| format!("PNG编码失败: {}", e))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
-    Ok(format!("data:image/png;base64,{}", b64))
+    Ok((format!("data:image/png;base64,{}", b64), bounds))
+}
+
+/// Trim white edges from an image (base64 data URL → trimmed base64 data URL).
+#[command]
+async fn trim_image(data_url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || trim_image_impl(data_url).map(|result| result.0))
+        .await
+        .map_err(|e| format!("裁剪任务失败: {}", e))?
+}
+
+/// Trim white edges and return normalized source-image bounds for vector PDF cropping.
+#[command]
+async fn trim_image_with_bounds(data_url: String) -> Result<TrimImageResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (data_url, bounds) = trim_image_impl(data_url)?;
+        let source_width = bounds.source_width.max(1) as f32;
+        let source_height = bounds.source_height.max(1) as f32;
+        Ok(TrimImageResult {
+            data_url,
+            width: bounds.width,
+            height: bounds.height,
+            crop_left: bounds.left as f32 / source_width,
+            crop_top: bounds.top as f32 / source_height,
+            crop_width: bounds.width as f32 / source_width,
+            crop_height: bounds.height as f32 / source_height,
+        })
+    })
+    .await
+    .map_err(|e| format!("裁剪任务失败: {}", e))?
 }
 
 /// Enhance a faint/blurry invoice image (levels stretch + gamma + unsharp mask).
@@ -1592,6 +1631,7 @@ pub fn run() {
         get_temp_dir,
         show_window,
         trim_image,
+        trim_image_with_bounds,
         enhance_image,
         generate_pdf_from_layout,
         print_pdf_file,
@@ -1633,6 +1673,7 @@ pub fn run() {
         get_temp_dir,
         show_window,
         trim_image,
+        trim_image_with_bounds,
         enhance_image,
         generate_pdf_from_layout,
         print_pdf_file,

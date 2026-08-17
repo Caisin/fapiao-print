@@ -36,7 +36,7 @@ var S = {
   printedFilter: 'all',
   ocrPrecision: 'standard',
   feat: {
-    cutline: true, number: false, border: false, trimWhite: false,
+    cutline: true, number: false, border: false, trimWhite: true,
     watermark: false, collate: true, duplex: false, pageNum: false,
     printDate: false, footer: false,
     autoOpenPdf: true,
@@ -64,6 +64,7 @@ function createFileObj(opts) {
     trimmedUrl: opts.trimmedUrl || '',
     trimmedW: opts.trimmedW || 0,
     trimmedH: opts.trimmedH || 0,
+    trimCrop: opts.trimCrop || null,
     copies: 1,
     rotation: 0,
     note: '',
@@ -2186,6 +2187,7 @@ function toggleTextEnhance() {
     f.trimmedUrl = null; // 白边缓存基于原图，需按还原后的图重算
     f.trimmedW = 0;
     f.trimmedH = 0;
+    f.trimCrop = null;
     updateAdjPanel();
     updatePreview();
     renderFileList();
@@ -2208,6 +2210,7 @@ function toggleTextEnhance() {
       f.trimmedUrl = null; // 白边缓存基于原图，需按增强后的图重算
       f.trimmedW = 0;
       f.trimmedH = 0;
+      f.trimCrop = null;
       updateAdjPanel();
       updatePreview();
       renderFileList();
@@ -2487,16 +2490,7 @@ function setCompactSpacing() {
 }
 function changeCopies(d) { var e = document.getElementById('copies'); e.value = Math.max(1, Math.min(99, parseInt(e.value) + d)); updatePreview(); }
 
-function readImageDimensions(dataUrl) {
-  return new Promise(function(resolve) {
-    var image = new Image();
-    image.onload = function() { resolve({ w: image.naturalWidth || 0, h: image.naturalHeight || 0 }); };
-    image.onerror = function() { resolve({ w: 0, h: 0 }); };
-    image.src = dataUrl;
-  });
-}
-
-// Trim whitespace — now delegates to Rust backend (10-50x faster)
+// Trim whitespace. OFD pages already expose tight page bounds, so leave them unchanged.
 async function processTrim(silent) {
   if (!isTauri || !invoke) {
     if (!silent) toast('白边裁剪需要桌面版');
@@ -2506,13 +2500,18 @@ async function processTrim(silent) {
   try {
     for (var i = 0; i < S.files.length; i++) {
       var f = S.files[i];
-      if (f.previewUrl && !f.trimmedUrl) {
-        f.trimmedUrl = await invoke('trim_image', { dataUrl: f.previewUrl });
-      }
-      if (f.trimmedUrl && (!f.trimmedW || !f.trimmedH)) {
-        var dimensions = await readImageDimensions(f.trimmedUrl);
-        f.trimmedW = dimensions.w;
-        f.trimmedH = dimensions.h;
+      if (!f.previewUrl || f._xmlInvoice || f.type === 'ofd') continue;
+      if (!f.trimmedUrl || !f.trimCrop) {
+        var result = await invoke('trim_image_with_bounds', { dataUrl: f.previewUrl });
+        f.trimmedUrl = result.dataUrl;
+        f.trimmedW = result.width;
+        f.trimmedH = result.height;
+        f.trimCrop = {
+          left: result.cropLeft,
+          top: result.cropTop,
+          width: result.cropWidth,
+          height: result.cropHeight
+        };
       }
     }
     if (!silent) hideLoading();
@@ -2717,6 +2716,7 @@ function updateSummaryBtn() { var btn = document.getElementById('summaryBtn'); i
 function saveSettings() {
   var o = {
     spacingModel: 'compact-v1',
+    trimLayoutVersion: 1,
     layout: { cols: S.layout.cols, rows: S.layout.rows },
     paperSize: document.getElementById('paperSize').value,
     orientation: document.getElementById('orientation').value,
@@ -2808,6 +2808,12 @@ function loadSettings() {
   if (legacyDefaultSpacing) {
     o.marginTop = 2; o.marginBottom = 2; o.marginLeft = 2; o.marginRight = 2;
     o.gapH = 1; o.gapV = 1;
+  }
+  // v1 introduces vector PDF cropping. Enable it once for existing settings so
+  // PDF pages with oversized MediaBox values immediately use their content area.
+  if (o.trimLayoutVersion !== 1) {
+    if (!o.feat) o.feat = {};
+    o.feat.trimWhite = true;
   }
   if (o.layout) {
     S.layout = { cols: o.layout.cols || 1, rows: o.layout.rows || 1 };
@@ -3003,7 +3009,7 @@ function exportSettings() {
 function resetSettings() {
   if (!confirm('确认恢复所有默认设置？')) return;
   S.layout = { cols: 1, rows: 1 };
-  S.feat = { cutline: true, number: false, border: false, trimWhite: false, watermark: false, footer: false, customFM: false, collate: true, duplex: false, pageNum: false, printDate: false, autoOpenPdf: true, ocrEnabled: false, pdfTextEnabled: true, slotAdjMemory: false, fileListMemory: false, reimburse: false };
+  S.feat = { cutline: true, number: false, border: false, trimWhite: true, watermark: false, footer: false, customFM: false, collate: true, duplex: false, pageNum: false, printDate: false, autoOpenPdf: true, ocrEnabled: false, pdfTextEnabled: true, slotAdjMemory: false, fileListMemory: false, reimburse: false };
   S.ocrPrecision = 'standard';
   S.viewZoom = 0;
   document.getElementById('paperSize').value = 'A4';

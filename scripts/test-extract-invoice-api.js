@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync('src/ocr.js', 'utf8');
 const appSource = fs.readFileSync('src/app.js', 'utf8');
 const layoutSource = fs.readFileSync('src/layout.js', 'utf8');
+const printSource = fs.readFileSync('src/print.js', 'utf8');
 const indexSource = fs.readFileSync('src/index.html', 'utf8');
 const publicApiStart = source.indexOf('/**\n * Extract all recognizable invoice fields');
 const publicApiEnd = source.indexOf('// =====================================================\n// v1.7.0', publicApiStart);
@@ -190,8 +191,13 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
   assert.match(indexSource, /id="marginTop"[^>]+value="2"/);
   assert.match(indexSource, /id="gapH"[^>]+value="1"/);
   assert.match(indexSource, /onclick="setCompactSpacing\(\)"/);
+  assert.match(indexSource, /class="tgl on" id="toggleTrimWhite"/);
+  assert.match(appSource, /trimWhite: true/);
+  assert.match(appSource, /trimLayoutVersion: 1/);
+  assert.match(appSource, /f\.type === 'ofd'/);
+  assert.match(printSource, /spec\.crop = fileObj\.trimCrop/);
 
-  process.stdout.write('invoice extraction API, directory UI, and compact layout tests passed\n');
+  process.stdout.write('invoice extraction API, directory UI, and compact PDF layout tests passed\n');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
