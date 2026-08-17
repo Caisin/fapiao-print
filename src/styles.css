@@ -415,6 +415,8 @@ input[type="range"] { flex: 1; height: 5px; accent-color: var(--accent); cursor:
 .modal-body::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 .invoice-modal { width: 900px; }
+.invoice-file-heading { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 10px; border-radius: 6px; background: var(--surface2); font-size: 13px; }
+.invoice-file-heading span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .invoice-detail-section { margin: 16px 0; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .invoice-detail-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; font-weight: 700; color: var(--text-primary); }
 .invoice-detail-title span { font-size: 11px; font-weight: 500; color: var(--text-muted); }
@@ -425,6 +427,14 @@ input[type="range"] { flex: 1; height: 5px; accent-color: var(--accent); cursor:
 .invoice-detail-field span { display: block; margin-bottom: 3px; font-size: 10px; color: var(--text-muted); }
 .invoice-detail-field strong { display: block; overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .invoice-detail-warnings { margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--warning); background: var(--surface2); color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.invoice-duplicate-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.duplicate-file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface2); }
+.duplicate-file-row:last-child { border-bottom: 0; }
+.duplicate-file-main { flex: 1; min-width: 0; }
+.duplicate-file-main strong, .duplicate-file-main span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duplicate-file-main strong { color: var(--text-primary); font-size: 12px; }
+.duplicate-file-main span { margin-top: 2px; color: var(--text-muted); font-size: 10px; font-family: Consolas, Monaco, monospace; }
+.duplicate-file-actions { display: flex; flex-shrink: 0; gap: 5px; }
 .invoice-detail-empty { padding: 14px; border: 1px dashed var(--border); color: var(--text-muted); font-size: 12px; text-align: center; }
 .invoice-lines-wrap { max-height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
 .invoice-lines-table { width: 100%; min-width: 860px; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }

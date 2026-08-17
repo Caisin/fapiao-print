@@ -62,6 +62,7 @@ pub(crate) fn extract_identity(text: &str, page: &RecognitionPage) -> IdentityFi
     if result.invoice_no.is_empty() {
         result.invoice_no = find_likely_invoice_number(text, &result);
     }
+    repair_tab_packed_fields(&mut result, text);
     result
 }
 
@@ -227,9 +228,161 @@ fn extract_invoice_clerk(text: &str) -> String {
 fn is_person_name(value: &str) -> bool {
     let count = value.chars().count();
     (2..=6).contains(&count)
+        && ![
+            "金额",
+            "税额",
+            "名称",
+            "单位",
+            "数量",
+            "单价",
+            "合计",
+            "备注",
+            "日期",
+            "信息",
+            "开票人",
+            "开票员",
+            "购买方",
+            "销售方",
+            "项目名称",
+            "规格型号",
+        ]
+        .contains(&value)
         && value
             .chars()
             .all(|ch| matches!(ch as u32, 0x3400..=0x9fff | 0xf900..=0xfaff) || ch == '·')
+}
+
+fn repair_tab_packed_fields(result: &mut IdentityFields, text: &str) {
+    if !text.contains('\t') {
+        return;
+    }
+
+    let tokens = text
+        .split(['\t', '\n', '\r'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let mut companies = tokens
+        .iter()
+        .map(|value| clean_name(value))
+        .filter(|value| is_valid_company_field(value))
+        .collect::<Vec<_>>();
+    companies.dedup();
+
+    let mut codes = tokens
+        .iter()
+        .map(|value| normalize_credit_code(value))
+        .filter(|value| is_likely_credit_code(value) && value != &result.invoice_no)
+        .collect::<Vec<_>>();
+    codes.dedup();
+
+    if !is_valid_company_field(&result.buyer_name) {
+        result.buyer_name = company_for_code(&companies, &codes, &result.buyer_credit_code)
+            .or_else(|| company_other_than(&companies, &result.seller_name))
+            .unwrap_or_default();
+    }
+    if !is_valid_company_field(&result.seller_name) {
+        result.seller_name = company_for_code(&companies, &codes, &result.seller_credit_code)
+            .or_else(|| company_other_than(&companies, &result.buyer_name))
+            .unwrap_or_default();
+    }
+
+    if result.buyer_credit_code.is_empty() {
+        result.buyer_credit_code = code_for_company(
+            &companies,
+            &codes,
+            &result.buyer_name,
+            &result.seller_credit_code,
+        );
+    }
+    if result.seller_credit_code.is_empty() {
+        result.seller_credit_code = code_for_company(
+            &companies,
+            &codes,
+            &result.seller_name,
+            &result.buyer_credit_code,
+        );
+    }
+
+    if result.invoice_clerk.is_empty() {
+        result.invoice_clerk = repeated_person_name(&tokens);
+    }
+}
+
+fn is_valid_company_field(value: &str) -> bool {
+    let count = value.chars().count();
+    (2..=80).contains(&count)
+        && !value.contains(['\t', '\n', '\r'])
+        && looks_like_company_name(value)
+        && ![
+            "统一社会信用代码",
+            "纳税人识别号",
+            "项目名称",
+            "发票号码",
+            "开票日期",
+            "税率/征收率",
+        ]
+        .iter()
+        .any(|label| value.contains(label))
+}
+
+fn is_likely_credit_code(value: &str) -> bool {
+    (15..=20).contains(&value.len())
+        && value.starts_with(|character: char| character.is_ascii_digit())
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+        && (value.len() == 18
+            || value
+                .chars()
+                .any(|character| character.is_ascii_alphabetic()))
+}
+
+fn company_for_code(companies: &[String], codes: &[String], code: &str) -> Option<String> {
+    let index = codes.iter().position(|candidate| candidate == code)?;
+    companies.get(index).cloned()
+}
+
+fn company_other_than(companies: &[String], other: &str) -> Option<String> {
+    companies
+        .iter()
+        .find(|value| value.as_str() != other)
+        .cloned()
+}
+
+fn code_for_company(
+    companies: &[String],
+    codes: &[String],
+    company: &str,
+    other_code: &str,
+) -> String {
+    companies
+        .iter()
+        .position(|candidate| candidate == company)
+        .and_then(|index| codes.get(index))
+        .filter(|code| code.as_str() != other_code)
+        .cloned()
+        .or_else(|| {
+            codes
+                .iter()
+                .find(|code| code.as_str() != other_code)
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
+fn repeated_person_name(tokens: &[&str]) -> String {
+    let mut candidates = tokens
+        .iter()
+        .filter(|value| is_person_name(value))
+        .copied()
+        .collect::<Vec<_>>();
+    candidates.sort_unstable();
+    candidates
+        .windows(2)
+        .find(|pair| pair[0] == pair[1])
+        .map(|pair| pair[0].to_string())
+        .unwrap_or_default()
 }
 
 fn is_financial_character(ch: char) -> bool {

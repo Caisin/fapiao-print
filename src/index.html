@@ -453,8 +453,8 @@
         <label class="manager-filter manager-filter-search"><span>关键词</span><input id="managerKeyword" type="search" placeholder="发票号、主体、文件名、项目" oninput="renderInvoiceManager()"></label>
         <label class="manager-filter"><span>开始日期</span><input id="managerDateFrom" type="date" onchange="renderInvoiceManager()"></label>
         <label class="manager-filter"><span>结束日期</span><input id="managerDateTo" type="date" onchange="renderInvoiceManager()"></label>
-        <label class="manager-filter"><span>购买方</span><select id="managerBuyer" onchange="renderInvoiceManager()"><option value="">全部购买方</option></select></label>
-        <label class="manager-filter"><span>销售方</span><select id="managerSeller" onchange="renderInvoiceManager()"><option value="">全部销售方</option></select></label>
+        <label class="manager-filter"><span>购买方</span><input id="managerBuyer" type="search" list="managerBuyerOptions" placeholder="全部购买方，可输入筛选" oninput="renderInvoiceManager()"><datalist id="managerBuyerOptions"></datalist></label>
+        <label class="manager-filter"><span>销售方</span><input id="managerSeller" type="search" list="managerSellerOptions" placeholder="全部销售方，可输入筛选" oninput="renderInvoiceManager()"><datalist id="managerSellerOptions"></datalist></label>
         <label class="manager-filter"><span>最低含税金额</span><input id="managerAmountMin" type="number" min="0" step="0.01" placeholder="0.00" oninput="renderInvoiceManager()"></label>
         <label class="manager-filter"><span>最高含税金额</span><input id="managerAmountMax" type="number" min="0" step="0.01" placeholder="不限" oninput="renderInvoiceManager()"></label>
         <label class="manager-filter"><span>发票类型</span><select id="managerType" onchange="renderInvoiceManager()"><option value="">全部类型</option></select></label>

@@ -1,6 +1,12 @@
 use crate::{InvoiceLineItem, RecognitionPage};
 
-pub(crate) fn extract_line_items(page: &RecognitionPage) -> Vec<InvoiceLineItem> {
+pub(crate) fn extract_line_items(
+    page: &RecognitionPage,
+    text: &str,
+    amount_no_tax: f64,
+    tax_amount: f64,
+    tax_rate: &str,
+) -> Vec<InvoiceLineItem> {
     let mut items = Vec::new();
     let mut accepts_continuation = false;
     for line in &page.lines {
@@ -60,7 +66,40 @@ pub(crate) fn extract_line_items(page: &RecognitionPage) -> Vec<InvoiceLineItem>
         accepts_continuation = true;
     }
     fill_discount_names(&mut items);
+    if items.is_empty() {
+        return extract_single_packed_item(text, amount_no_tax, tax_amount, tax_rate);
+    }
     items
+}
+
+fn extract_single_packed_item(
+    text: &str,
+    amount_no_tax: f64,
+    tax_amount: f64,
+    tax_rate: &str,
+) -> Vec<InvoiceLineItem> {
+    if amount_no_tax <= 0.0 || tax_rate.contains(',') {
+        return Vec::new();
+    }
+    let mut projects = text
+        .split(['\t', '\n', '\r'])
+        .map(str::trim)
+        .filter(|value| {
+            value.starts_with('*') && value[1..].contains('*') && !value.contains("项目名称")
+        })
+        .collect::<Vec<_>>();
+    projects.dedup();
+    if projects.len() != 1 {
+        return Vec::new();
+    }
+    vec![InvoiceLineItem {
+        project_name: projects[0].to_string(),
+        amount: amount_no_tax,
+        tax_rate: tax_rate.to_string(),
+        tax_amount,
+        amount_tax: round_money(amount_no_tax + tax_amount),
+        ..Default::default()
+    }]
 }
 
 fn fill_discount_names(items: &mut [InvoiceLineItem]) {
@@ -139,7 +178,7 @@ mod tests {
             ..Default::default()
         };
 
-        let items = extract_line_items(&page);
+        let items = extract_line_items(&page, &page.text, 0.0, 0.0, "");
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].project_name, "*其他食品*青豌豆小辣丁20g");

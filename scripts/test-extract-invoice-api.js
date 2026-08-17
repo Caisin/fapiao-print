@@ -232,7 +232,41 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
   assert.equal(records.find((record) => record._sourcePath === '/tmp/c.pdf')._parseStatus, 'error');
   recordsContext.getInvoiceRecords([page1, page2], false);
   assert.equal(page1._duplicateInvoice, true, 'filtered summaries must not clear global duplicate flags');
+
+  context.S = { files: [page1, page2, duplicate, failed] };
+  context.normalizeInvoiceNo = recordsContext.normalizeInvoiceNo;
+  context.getInvoiceRecords = recordsContext.getInvoiceRecords;
+  const duplicateDetails = context.buildExtractorDetailsHtml(page1);
+  assert.match(duplicateDetails, /同号关联文件/);
+  assert.match(duplicateDetails, /b\.pdf/);
+  assert.match(duplicateDetails, /复制目录/);
+  assert.equal(context.getInvoiceDirectory('/tmp/invoices/a.pdf'), '/tmp/invoices');
+  assert.equal(context.getInvoiceDirectory('C:\\invoice.pdf'), 'C:\\');
+
+  const dateKeyStart = appSource.indexOf('function invoiceDateKey');
+  const dateKeyEnd = appSource.indexOf('function managerMoney', dateKeyStart);
+  const managerFilterStart = appSource.indexOf('function getManagerFilteredRecords');
+  const managerFilterEnd = appSource.indexOf('function managerStatusHtml', managerFilterStart);
+  const managerValues = {
+    managerKeyword: '', managerDateFrom: '', managerDateTo: '', managerBuyer: '小菜园',
+    managerSeller: ' 万漫 ', managerType: '', managerStatus: '', managerAmountMin: '', managerAmountMax: ''
+  };
+  const managerContext = {
+    _invoiceManagerRecords: [{
+      buyerName: '安徽小菜园餐饮管理有限责任公司', sellerName: '长沙万漫网络科技有限公司',
+      amountTax: 430, invoiceDate: '2026-07-07', _parseStatus: 'ok'
+    }],
+    document: { getElementById: (id) => ({ value: managerValues[id] }) }
+  };
+  vm.createContext(managerContext);
+  vm.runInContext(
+    appSource.slice(dateKeyStart, dateKeyEnd) + appSource.slice(managerFilterStart, managerFilterEnd),
+    managerContext
+  );
+  assert.equal(managerContext.getManagerFilteredRecords().length, 1, 'buyer and seller inputs should support trimmed partial filtering');
   assert.match(indexSource, /id="invoiceManagerModal"/);
+  assert.match(indexSource, /id="managerBuyer"[^>]+list="managerBuyerOptions"/);
+  assert.match(indexSource, /id="managerSeller"[^>]+list="managerSellerOptions"/);
   assert.match(indexSource, /data-tab="month"/);
   assert.match(indexSource, /data-tab="seller"/);
   assert.match(indexSource, /data-tab="buyer"/);

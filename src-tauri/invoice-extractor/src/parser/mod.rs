@@ -43,6 +43,13 @@ pub(crate) fn parse_recognition_page(
     } else {
         amounts.amount_no_tax
     };
+    let line_items = items::extract_line_items(
+        page,
+        &normalized,
+        amounts.amount_no_tax,
+        amounts.tax_amount,
+        &amounts.tax_rate,
+    );
 
     InvoiceInfo {
         page_index,
@@ -61,7 +68,7 @@ pub(crate) fn parse_recognition_page(
         tax_rate: amounts.tax_rate,
         amount_uppercase: amounts.amount_uppercase,
         invoice_clerk: identity.invoice_clerk,
-        line_items: items::extract_line_items(page),
+        line_items,
         is_ticket: identity.is_ticket,
         is_non_tax: identity.is_non_tax,
         amount_validation: validation,
@@ -157,6 +164,53 @@ mod tests {
         let info = parse_recognition_page(&page, 0, "pdf-text", false);
 
         assert_eq!(info.invoice_clerk, "唐嫣");
+    }
+
+    #[test]
+    fn extracts_tab_packed_pdf_fields_and_single_line_item() {
+        let raw_text = "长沙万漫网络科技有限公司\t安徽小菜园餐饮管理有限责任公司长沙岳麓王府井店\t*生产生活服务*餐饮服务\t杨甜梅\t26432000001576189981\t2026年07月07日\t杨甜梅\t91430104MA4T8FT50U\t91430104MAEP5LEU4X\t发票号码：\t开票日期：\t购\t买\t方\t信\t息\t统一社会信用代码/纳税人识别号：\t销\t售\t方\t信\t息\t统一社会信用代码/纳税人识别号：\t名称：\t名称：\t项目名称\t规格型号\t单  位\t数  量\t单  价\t金  额\t税率/征收率\t税  额\t合\t计\t价税合计（大写）\t（小写）\t备\t注\t开票人：\t6%\t¥\t405.66\t¥\t405.66\t405.66\t24.34\t24.34\t1\n肆佰叁拾圆整\t¥\t电子发票（普通发票）\t430.00";
+        let page = RecognitionPage {
+            text: raw_text.to_string(),
+            lines: vec![crate::RecognitionLine {
+                words: vec![
+                    positioned_word("安徽小菜园餐饮管理有限责任公司长沙岳麓王府井店", 100.0),
+                    positioned_word("长沙万漫网络科技有限公司", 700.0),
+                    positioned_word("91430104MAEP5LEU4X", 100.0),
+                    positioned_word("91430104MA4T8FT50U", 700.0),
+                ],
+                confidence: 1.0,
+            }],
+            img_w: 1000,
+            img_h: 700,
+        };
+
+        let info = parse_recognition_page(&page, 0, "pdf-text", true);
+
+        assert_eq!(info.invoice_no, "26432000001576189981");
+        assert_eq!(info.invoice_date, "2026-07-07");
+        assert_eq!(
+            info.buyer_name,
+            "安徽小菜园餐饮管理有限责任公司长沙岳麓王府井店"
+        );
+        assert_eq!(info.buyer_credit_code, "91430104MAEP5LEU4X");
+        assert_eq!(info.seller_name, "长沙万漫网络科技有限公司");
+        assert_eq!(info.seller_credit_code, "91430104MA4T8FT50U");
+        assert_eq!(info.amount_tax, 430.0);
+        assert_eq!(info.amount_no_tax, 405.66);
+        assert_eq!(info.tax_amount, 24.34);
+        assert_eq!(info.tax_rate, "6%");
+        assert_eq!(info.amount_uppercase, "肆佰叁拾圆整");
+        assert_eq!(info.invoice_clerk, "杨甜梅");
+        assert_eq!(info.line_items.len(), 1);
+        assert_eq!(info.line_items[0].project_name, "*生产生活服务*餐饮服务");
+    }
+
+    fn positioned_word(text: &str, x: f64) -> crate::RecognitionWord {
+        crate::RecognitionWord {
+            text: text.to_string(),
+            x,
+            ..Default::default()
+        }
     }
 
     #[test]

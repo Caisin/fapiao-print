@@ -32,8 +32,14 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
         ..Default::default()
     };
     result.amount_uppercase = extract_chinese_total_text(&compact_text);
-    if result.amount_tax <= 0.0 {
-        result.amount_tax = parse_chinese_number(&result.amount_uppercase);
+    let uppercase_total = parse_chinese_number(&result.amount_uppercase);
+    let uppercase_is_corroborated = all
+        .iter()
+        .any(|value| (*value - uppercase_total).abs() <= 0.02);
+    if uppercase_total > 0.0 && (result.amount_tax <= 0.0 || uppercase_is_corroborated) {
+        // The uppercase total is authoritative when PDF text objects are emitted
+        // out of visual order, but numeric text must corroborate an override.
+        result.amount_tax = uppercase_total;
     }
     if result.amount_tax <= 0.0 {
         result.amount_tax = all.iter().copied().fold(0.0, f64::max);

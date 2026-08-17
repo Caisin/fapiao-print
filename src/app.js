@@ -2121,6 +2121,50 @@ function buildLineItemsHtml(items) {
     '<tbody>' + rows + '</tbody></table></div>';
 }
 
+var _invoiceDetailRelatedRecords = [];
+
+function getInvoiceFilePath(fileObj) {
+  if (!fileObj) return '';
+  return fileObj._sourcePath || fileObj._pdfPath || fileObj._filePath || '';
+}
+
+function getInvoiceDirectory(path) {
+  var value = String(path || '');
+  var separator = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+  if (separator < 0) return '';
+  if (separator === 0) return value.slice(0, 1);
+  if (separator === 2 && /^[A-Za-z]:/.test(value)) return value.slice(0, 3);
+  return value.slice(0, separator);
+}
+
+function getRelatedDuplicateRecords(fileObj) {
+  if (!fileObj || !fileObj._duplicateInvoice) return [];
+  var invoiceNo = normalizeInvoiceNo(fileObj.invoiceNo);
+  if (!invoiceNo) return [];
+  return getInvoiceRecords(S.files, false).filter(function(record) {
+    return normalizeInvoiceNo(record.invoiceNo) === invoiceNo &&
+      record._sourceFiles.indexOf(fileObj) < 0;
+  });
+}
+
+function buildDuplicateFilesHtml(fileObj) {
+  _invoiceDetailRelatedRecords = getRelatedDuplicateRecords(fileObj);
+  if (_invoiceDetailRelatedRecords.length === 0) return '';
+  var rows = _invoiceDetailRelatedRecords.map(function(record, index) {
+    var sourcePath = getInvoiceFilePath(record);
+    var directory = getInvoiceDirectory(sourcePath);
+    return '<div class="duplicate-file-row">' +
+      '<div class="duplicate-file-main"><strong title="' + escHtml(record.name || sourcePath) + '">' + escHtml(record.name || '未命名文件') + '</strong>' +
+      '<span title="' + escHtml(directory) + '">' + escHtml(directory || '目录不可用') + '</span></div>' +
+      '<div class="duplicate-file-actions">' +
+      '<button type="button" class="manager-detail-btn" onclick="openRelatedInvoiceDirectory(' + index + ')" title="打开文件目录">打开</button>' +
+      '<button type="button" class="manager-detail-btn" onclick="copyRelatedInvoiceDirectory(' + index + ',this)" title="复制文件目录">复制目录</button>' +
+      '</div></div>';
+  }).join('');
+  return '<div class="invoice-duplicate-section"><div class="invoice-detail-title">同号关联文件 <span>' +
+    _invoiceDetailRelatedRecords.length + ' 个其它文件</span></div>' + rows + '</div>';
+}
+
 function buildExtractorDetailsHtml(f) {
   var validation = f.amountValidation
     ? '异常：含税 ¥' + detailNumber(f.amountValidation.amountTax, true) +
@@ -2149,7 +2193,7 @@ function buildExtractorDetailsHtml(f) {
       field('数据状态', statusLabels.join(' / '), true) +
       field('金额校验', validation, true) +
       field('大写金额', f.amountUppercase || '—', true) +
-    '</div>' + warnings +
+    '</div>' + warnings + buildDuplicateFilesHtml(f) +
     '<div class="invoice-detail-title line-title">商品明细 <span>' + (Array.isArray(f.lineItems) ? f.lineItems.length : 0) + ' 条</span></div>' +
     buildLineItemsHtml(f.lineItems) +
   '</div>';
@@ -2165,7 +2209,8 @@ function openInvModal(i) {
   var mRF = function(label, html) { return '<div class="modal-row"><label class="modal-lbl">' + label + '</label><div class="modal-ctrl end">' + html + '</div></div>'; };
   var mRA = function(label, html) { return '<div class="modal-row"><label class="modal-lbl">' + label + '</label><div class="modal-ctrl">' + html + '</div></div>'; };
   document.getElementById('invModalBody').innerHTML =
-    '<div style="font-size:13px;padding:8px 10px;background:var(--surface2);border-radius:6px;margin-bottom:10px">\uD83D\uDCC4 ' + escHtml(f.name) + '</div>' +
+    '<div class="invoice-file-heading"><span title="' + escHtml(getInvoiceFilePath(f)) + '">\uD83D\uDCC4 ' + escHtml(f.name) + '</span>' +
+    '<button type="button" class="manager-detail-btn" onclick="copyCurrentInvoiceDirectory(this)" title="复制当前发票所在目录">复制目录</button></div>' +
     mRF('排版份数', '<button class="btn btn-sm btn-icon" onclick="changeModalCopies(-1)">\u2212</button><input type="number" id="mCopies" value="' + f.copies + '" min="1" max="99" style="width:52px;text-align:center;flex:none"><button class="btn btn-sm btn-icon" onclick="changeModalCopies(1)">+</button>') +
     '<div style="font-size:10px;color:var(--text-muted);margin:-6px 0 8px 76px">同一发票在布局中占几个位置</div>' +
     mRF('含税价', '<span style="font-size:14px;font-weight:600;color:var(--success);flex-shrink:0">\u00A5</span><input type="number" id="mAmountTax" value="' + (f.amountTax || '') + '" min="0" step="0.01" placeholder="0.00" style="' + _fw + '">') +
@@ -2215,14 +2260,51 @@ function confirmInvModal() {
   closeInvModal(); renderFileList(); updatePreview(); updateAmountSummary();
 }
 
+function copyTextValue(text, btn) {
+  if (!text) { toast('文件目录不可用'); return; }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function() {
+      showCopySuccess(btn);
+    }).catch(function() { fallbackCopy(text, btn); });
+  } else {
+    fallbackCopy(text, btn);
+  }
+}
+
+function showCopySuccess(btn) {
+  if (!btn) { toast('已复制'); return; }
+  var original = btn.innerHTML;
+  btn.textContent = '✓ 已复制';
+  setTimeout(function() { btn.innerHTML = original; }, 1500);
+}
+
+function copyCurrentInvoiceDirectory(btn) {
+  var fileObj = S.files[S.editIdx];
+  copyTextValue(getInvoiceDirectory(getInvoiceFilePath(fileObj)), btn);
+}
+
+function copyRelatedInvoiceDirectory(index, btn) {
+  var record = _invoiceDetailRelatedRecords[index];
+  copyTextValue(getInvoiceDirectory(getInvoiceFilePath(record)), btn);
+}
+
+function openRelatedInvoiceDirectory(index) {
+  var record = _invoiceDetailRelatedRecords[index];
+  var directory = getInvoiceDirectory(getInvoiceFilePath(record));
+  if (!directory) { toast('文件目录不可用'); return; }
+  if (!isTauri || !invoke) { toast(directory); return; }
+  invoke('open_file', { path: directory }).catch(function(error) {
+    toast('打开目录失败: ' + String(error));
+  });
+}
+
 function copyOcrText(btn) {
   var pre = btn.parentElement.querySelector('pre');
   if (!pre) return;
   var text = pre.textContent || pre.innerText;
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(function() {
-      btn.textContent = '✓ 已复制';
-      setTimeout(function() { btn.innerHTML = '📋 复制'; }, 1500);
+      showCopySuccess(btn);
     }).catch(function() { fallbackCopy(text, btn); });
   } else {
     fallbackCopy(text, btn);
@@ -2232,7 +2314,7 @@ function fallbackCopy(text, btn) {
   var ta = document.createElement('textarea');
   ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
   document.body.appendChild(ta); ta.select();
-  try { document.execCommand('copy'); btn.textContent = '✓ 已复制'; setTimeout(function() { btn.innerHTML = '📋 复制'; }, 1500); }
+  try { document.execCommand('copy'); showCopySuccess(btn); }
   catch(e) { toast('复制失败'); }
   document.body.removeChild(ta);
 }
@@ -3737,6 +3819,17 @@ function populateManagerSelect(id, values, placeholder, labelFn) {
   if (values.indexOf(current) >= 0) select.value = current;
 }
 
+function populateManagerDatalist(id, values) {
+  var datalist = document.getElementById(id);
+  if (!datalist) return;
+  datalist.innerHTML = '';
+  values.forEach(function(value) {
+    var option = document.createElement('option');
+    option.value = value;
+    datalist.appendChild(option);
+  });
+}
+
 function uniqueManagerValues(records, key) {
   var values = [];
   records.forEach(function(record) {
@@ -3750,8 +3843,8 @@ function openInvoiceManager() {
   _invoiceManagerRecords = getInvoiceRecords(S.files);
   if (_invoiceManagerRecords.length === 0) { toast('没有可管理的发票数据'); return; }
   _invoiceManagerRecords.forEach(function(record, index) { record._managerIndex = index; });
-  populateManagerSelect('managerBuyer', uniqueManagerValues(_invoiceManagerRecords, 'buyerName'), '全部购买方');
-  populateManagerSelect('managerSeller', uniqueManagerValues(_invoiceManagerRecords, 'sellerName'), '全部销售方');
+  populateManagerDatalist('managerBuyerOptions', uniqueManagerValues(_invoiceManagerRecords, 'buyerName'));
+  populateManagerDatalist('managerSellerOptions', uniqueManagerValues(_invoiceManagerRecords, 'sellerName'));
   populateManagerSelect('managerType', uniqueManagerValues(_invoiceManagerRecords, 'invoiceType'), '全部类型', invoiceTypeLabel);
 
   var sourceKeys = {};
@@ -3782,9 +3875,9 @@ function getManagerFilteredRecords() {
   var keyword = document.getElementById('managerKeyword').value.trim().toLowerCase();
   var dateFrom = document.getElementById('managerDateFrom').value;
   var dateTo = document.getElementById('managerDateTo').value;
-  var buyer = document.getElementById('managerBuyer').value;
-  var seller = document.getElementById('managerSeller').value;
-  var type = document.getElementById('managerType').value;
+  var buyer = document.getElementById('managerBuyer').value.trim();
+  var seller = document.getElementById('managerSeller').value.trim();
+  var type = document.getElementById('managerType').value.trim();
   var status = document.getElementById('managerStatus').value;
   var amountMinText = document.getElementById('managerAmountMin').value;
   var amountMaxText = document.getElementById('managerAmountMax').value;
@@ -3796,9 +3889,9 @@ function getManagerFilteredRecords() {
     var amount = Number(record.amountTax || record.amount || 0);
     if (dateFrom && (!date || date < dateFrom)) return false;
     if (dateTo && (!date || date > dateTo)) return false;
-    if (buyer && record.buyerName !== buyer) return false;
-    if (seller && record.sellerName !== seller) return false;
-    if (type && record.invoiceType !== type) return false;
+    if (buyer && String(record.buyerName || '').trim().indexOf(buyer) < 0) return false;
+    if (seller && String(record.sellerName || '').trim().indexOf(seller) < 0) return false;
+    if (type && String(record.invoiceType || '').trim() !== type) return false;
     if (amountMin !== null && amount < amountMin) return false;
     if (amountMax !== null && amount > amountMax) return false;
     if (status === 'duplicate' && !record._duplicateInvoice) return false;
