@@ -1,0 +1,14 @@
+{
+  "owner": "hud",
+  "pid": 306,
+  "cwd": "/Volumes/data/code/tauri/fapiao-print",
+  "heartbeat_at": "2026-08-17T09:59:25.185Z",
+  "cooldown_ms": 5000,
+  "jitter_ms": 213,
+  "skip_count": 19453,
+  "last_status": "skipped",
+  "last_reason": "rate_limited",
+  "last_spawn_at": "2026-08-17T09:59:24.186Z",
+  "last_skip_at": "2026-08-17T09:59:25.185Z",
+  "next_allowed_at": "2026-08-17T09:59:29.399Z"
+}
