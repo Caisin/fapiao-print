@@ -642,6 +642,47 @@ async function applyOcrPdfPage(fileObj) {
   }
 }
 
+// =====================================================
+// Public invoice file extraction API
+// =====================================================
+
+
+/**
+ * Extract all recognizable invoice fields from one local invoice file.
+ *
+ * Supported formats: PDF, OFD, XML, JPG/JPEG, PNG, BMP, WebP, TIFF.
+ * PDF files may contain multiple invoices; each page is returned in `invoices`.
+ * This function does not mutate the application's file list or UI state.
+ *
+ * @param {string|Object} input Absolute file path, or `{ path }` / `{ filePath }`.
+ * @param {Object} [options]
+ * @param {boolean} [options.useOcr=true] Use OCR when structured/text extraction is incomplete.
+ * @param {'fast'|'standard'|'precise'} [options.ocrPrecision='standard'] OCR precision.
+ * @param {boolean} [options.includeRawText=true] Include recognized source text.
+ * @returns {Promise<{success:boolean,filePath:string,fileName:string,fileType:string,pageCount:number,invoices:Array,warnings:Array}>}
+ */
+async function extractInvoiceFile(input, options) {
+  if (typeof isTauri === 'undefined' || !isTauri || typeof invoke !== 'function') {
+    throw new Error('extractInvoiceFile 仅支持 Tauri 桌面环境');
+  }
+
+  var filePath = typeof input === 'string'
+    ? input
+    : (input && (input.path || input.filePath));
+  if (!filePath || typeof filePath !== 'string') {
+    throw new TypeError('请传入发票文件的绝对路径');
+  }
+
+  return invoke('extract_invoice_file', {
+    filePath: filePath,
+    options: options || null
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.extractInvoiceFile = extractInvoiceFile;
+}
+
 
 // =====================================================
 // v1.7.0 — Coordinate-first invoice extraction

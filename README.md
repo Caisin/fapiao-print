@@ -141,9 +141,10 @@ OFD（开放版式文档）是国家标准电子发票格式，本工具提供�
 |------|------|------|
 | 前端 | 原生 HTML/CSS/JS | 模块化（app / ocr / layout / print），零依赖框架 |
 | 后端 | Tauri 2.x (Rust) | 轻量桌面框架，Rust 条件编译管理功能开关 |
-| PDF 渲染 | WinRT + PDFium 双引擎 | WinRT 原生渲染优先，自动 fallback PDFium（Chromium 内核） |
+| PDF 渲染 | WinRT / CoreGraphics + PDFium | Windows 优先 WinRT、macOS 使用 CoreGraphics，Windows 可 fallback PDFium（Chromium 内核） |
 | PDF 生成 | printpdf 0.9 + lopdf 0.39 | JPEG 直通零质量损失、PDF 页面 Form XObject 全布局直通 |
 | OFD/XML 解析 | Rust 独立 crate (`invoice-engine/`) | 矢量 SVG 渲染 + 发票 XML/数电票字段直提 + 红章 Appearance 偏移叠加 + DrawParam 继承链 + ImageMask 遮罩合成 |
+| 统一信息提取 | Rust 独立 crate (`invoice-extractor/`) | 跨平台文件分发、字段识别、金额校验；OCR 通过 trait 注入 |
 | OCR | ocr-rs 2.2 (PP-OCRv5 + MNN) | 文本优先 + 坐标回退，对比度增强，Lanczos3 锐化（OCR 版可选） |
 | 图像处理 | image 0.25 (Rust) | 原生 WebP/TIFF 支持，kamadak-exif 方向自动修正 |
 | 打印 | Print Spooler API + PDFium + SumatraPDF + ShellExecuteW (Win32) | 静默打印（PDFium 直打 DC / SumatraPDF CLI）/ 弹窗确认 / PDF 阅读器 |
@@ -179,7 +180,7 @@ ticketchan/
 
 ## 🚀 开发
 
-**环境要求**：Node.js 18+、Rust 1.77+、Windows 10/11
+**环境要求**：Node.js 18+、Rust 1.77+、Windows 10/11 或 macOS
 
 ```bash
 npm install
@@ -196,6 +197,41 @@ npm run build:all    # 一键全量构建（4 产物）
 # 版本号
 npm run bump 1.9.8   # 同步 package.json → Cargo.toml → tauri.conf.json
 ```
+
+### 发票信息提取公共方法
+
+字段识别由独立 Rust crate `src-tauri/invoice-extractor/` 完成。桌面端加载完成后可调用
+全局异步方法，只需传入本地发票文件的绝对路径；JS 只负责转发一次 Tauri IPC：
+
+```js
+var result = await extractInvoiceFile('/path/to/invoice.pdf', {
+  useOcr: true,
+  ocrPrecision: 'standard', // fast / standard / precise
+  includeRawText: true
+});
+
+console.log(result.invoices);
+```
+
+支持 PDF、OFD、XML、JPG/JPEG、PNG、BMP、WebP、TIFF。PDF 每页对应
+`invoices[]` 中的一项；每项统一返回票号、日期、类型、购销方名称与税号、
+含税/不含税金额、税额、识别来源和原始文本。轻量版可直接识别 PDF 文字层、
+OFD 和 XML；扫描 PDF 与图片文件需要 OCR 版。
+
+Rust 代码可直接使用无 OCR 的路径入口：
+
+```rust
+let result = invoice_extractor::extract_file("/path/to/invoice.xml")?;
+```
+
+需要扫描件识别时启用 crate 的 `paddle-ocr` feature，使用内置
+`PaddleOcrBackend`。桌面端会自动查找开发目录 `src-tauri/models` 或发布目录
+`models/` 下的 PP-OCRv5 检测、识别和字符集文件，并用 `OnceLock` 复用模型实例。
+crate 本身不依赖 Tauri、WinRT 或 CoreGraphics，Windows/macOS 的 PDF 渲染差异
+由 `PdfPageRenderer` 适配层处理。
+
+完整 Rust、图片 OCR、扫描 PDF 和前端调用示例见
+[`src-tauri/invoice-extractor/README.md`](src-tauri/invoice-extractor/README.md)。
 
 ## 🗺 路线图
 

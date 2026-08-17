@@ -1,0 +1,27 @@
+[package]
+name = "invoice-extractor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+description = "Cross-platform invoice file extraction and field recognition"
+license = "MIT"
+
+[features]
+default = []
+paddle-ocr = ["dep:image", "dep:ocr-rs"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "tiff", "webp"], optional = true }
+lopdf = "0.39"
+ocr-rs = { version = "=2.2.2", optional = true }
+quick-xml = "0.37"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[[example]]
+name = "extract_with_ocr"
+required-features = ["paddle-ocr"]

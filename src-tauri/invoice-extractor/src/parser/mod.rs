@@ -1,0 +1,173 @@
+mod amounts;
+mod fields;
+mod normalize;
+
+use crate::{AmountValidation, InvoiceInfo, RecognitionPage};
+
+pub(crate) fn parse_recognition_page(
+    page: &RecognitionPage,
+    page_index: u32,
+    source: &str,
+    include_raw_text: bool,
+) -> InvoiceInfo {
+    let raw_text = if page.text.trim().is_empty() {
+        page.lines
+            .iter()
+            .map(|line| {
+                line.words
+                    .iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        page.text.clone()
+    };
+    let normalized = normalize::normalize_text(&raw_text);
+    let identity = fields::extract_identity(&normalized, page);
+    let mut amounts =
+        amounts::extract_amounts(&normalized, identity.is_ticket, identity.is_non_tax);
+
+    let validation = validate_amounts(
+        &mut amounts,
+        source,
+        identity.is_ticket,
+        identity.is_non_tax,
+    );
+    let amount = if amounts.amount_tax > 0.0 {
+        amounts.amount_tax
+    } else {
+        amounts.amount_no_tax
+    };
+
+    InvoiceInfo {
+        page_index,
+        source: source.to_string(),
+        invoice_no: identity.invoice_no,
+        invoice_date: identity.invoice_date,
+        invoice_type: identity.invoice_type,
+        buyer_name: identity.buyer_name,
+        buyer_credit_code: identity.buyer_credit_code,
+        seller_name: identity.seller_name,
+        seller_credit_code: identity.seller_credit_code,
+        amount,
+        amount_tax: amounts.amount_tax,
+        amount_no_tax: amounts.amount_no_tax,
+        tax_amount: amounts.tax_amount,
+        is_ticket: identity.is_ticket,
+        is_non_tax: identity.is_non_tax,
+        amount_validation: validation,
+        raw_text: include_raw_text.then_some(raw_text),
+    }
+}
+
+fn validate_amounts(
+    amounts: &mut amounts::Amounts,
+    source: &str,
+    is_ticket: bool,
+    is_non_tax: bool,
+) -> Option<AmountValidation> {
+    if is_ticket || is_non_tax || amounts.amount_tax <= 0.0 || amounts.amount_no_tax <= 0.0 {
+        return None;
+    }
+    let sum = round_money(amounts.amount_no_tax + amounts.tax_amount);
+    if (sum - amounts.amount_tax).abs() <= 0.02 {
+        return None;
+    }
+
+    let original = AmountValidation {
+        amount_tax: amounts.amount_tax,
+        amount_no_tax: amounts.amount_no_tax,
+        tax_amount: amounts.tax_amount,
+        source: source.to_string(),
+    };
+    if amounts.tax_amount > 0.0 && amounts.tax_amount < amounts.amount_tax {
+        let no_tax = round_money(amounts.amount_tax - amounts.tax_amount);
+        if valid_tax_rate(no_tax, amounts.tax_amount) {
+            amounts.amount_no_tax = no_tax;
+            return None;
+        }
+    }
+    if amounts.amount_no_tax > 0.0 && amounts.amount_no_tax < amounts.amount_tax {
+        let tax = round_money(amounts.amount_tax - amounts.amount_no_tax);
+        if valid_tax_rate(amounts.amount_no_tax, tax) {
+            amounts.tax_amount = tax;
+            return None;
+        }
+    }
+    Some(original)
+}
+
+pub(crate) fn round_money(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+pub(crate) fn valid_tax_rate(amount_no_tax: f64, tax_amount: f64) -> bool {
+    if amount_no_tax <= 0.0 || tax_amount < 0.0 {
+        return false;
+    }
+    let rate = tax_amount / amount_no_tax;
+    [0.0, 0.01, 0.03, 0.05, 0.06, 0.09, 0.13]
+        .iter()
+        .any(|expected| (rate - expected).abs() < 0.005)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_standard_vat_invoice() {
+        let page = RecognitionPage::from_text(
+            "电子发票（普通发票）\n发票号码：25322000000337005189\n开票日期：2025年07月22日\n\
+             购买方名称：江苏测试科技有限公司\n统一社会信用代码：9132020013590404XW\n\
+             销售方名称：无锡示例商贸有限公司\n统一社会信用代码：91320200796148368W\n\
+             合计 ¥100.00 ¥13.00\n价税合计（小写）¥113.00",
+        );
+        let info = parse_recognition_page(&page, 0, "pdf-text", true);
+        assert_eq!(info.invoice_no, "25322000000337005189");
+        assert_eq!(info.invoice_date, "2025-07-22");
+        assert_eq!(info.buyer_name, "江苏测试科技有限公司");
+        assert_eq!(info.seller_name, "无锡示例商贸有限公司");
+        assert_eq!(info.amount_tax, 113.0);
+        assert_eq!(info.amount_no_tax, 100.0);
+        assert_eq!(info.tax_amount, 13.0);
+        assert!(info.amount_validation.is_none());
+    }
+
+    #[test]
+    fn extracts_non_tax_invoice() {
+        let page = RecognitionPage::from_text(
+            "江苏省非税收入统一票据（电子）\n票据号码：32000123456789012345\n\
+             开票日期：2026-04-28\n交款人：张三\n收款单位：某某行政服务中心\n金额合计（小写）¥88.00"
+        );
+        let info = parse_recognition_page(&page, 0, "pdf-text", false);
+        assert!(info.is_non_tax);
+        assert_eq!(info.invoice_no, "32000123456789012345");
+        assert_eq!(info.buyer_name, "张三");
+        assert_eq!(info.seller_name, "某某行政服务中心");
+        assert_eq!(info.amount_tax, 88.0);
+        assert_eq!(info.amount_no_tax, 88.0);
+    }
+
+    #[test]
+    fn extracts_values_from_separate_pdf_text_blocks() {
+        let page = RecognitionPage::from_text(
+            "电子发票（普通发票）\n发票号码：\n开票日期：\n购买方信息\n销售方信息\n\
+             名称：\n名称：\n26432000001910446111\n2026年08月16日\n\
+             长沙百寻网络科技有限公司\n91430104MACJBWXN1K\n\
+             植觉素茶餐（长沙）有限公司\n91430104MAD21GYF0P\n\
+             合计 ¥335.64 ¥3.36\n价税合计（小写）¥339.00",
+        );
+
+        let info = parse_recognition_page(&page, 0, "pdf-text", false);
+        assert_eq!(info.invoice_no, "26432000001910446111");
+        assert_eq!(info.invoice_date, "2026-08-16");
+        assert_eq!(info.buyer_name, "长沙百寻网络科技有限公司");
+        assert_eq!(info.buyer_credit_code, "91430104MACJBWXN1K");
+        assert_eq!(info.seller_name, "植觉素茶餐（长沙）有限公司");
+        assert_eq!(info.seller_credit_code, "91430104MAD21GYF0P");
+    }
+}

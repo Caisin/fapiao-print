@@ -989,6 +989,22 @@ pub(crate) fn ocr_pdf_page(pdf_path: &str, page_index: u32, dpi: Option<u32>, oc
     run_ocr_on_image(img, max_dim)
 }
 
+/// Cross-platform PDF page OCR fallback. Native renderers keep platform-specific
+/// PDF details isolated, while OCR and the public extraction API share one path.
+#[cfg(all(not(target_os = "windows"), feature = "ocr"))]
+pub(crate) fn ocr_pdf_page(
+    pdf_path: &str,
+    page_index: u32,
+    dpi: Option<u32>,
+    ocr_precision: Option<&str>,
+) -> Result<OcrResult, String> {
+    let pages = render_pdf_pages(pdf_path, dpi.unwrap_or(192), true)?;
+    let page = pages.into_iter()
+        .find(|page| page.index == page_index)
+        .ok_or_else(|| format!("页码超出范围: 请求第{}页", page_index + 1))?;
+    ocr_image(&page.image_data_url, None, ocr_precision)
+}
+
 /// Render PDF pages and run OCR in one pass — avoids the IPC round-trip
 /// where the frontend sends the rendered dataUrl back to Rust for OCR.
 /// The image is decoded from PNG bytes ONCE, OCR'd, then base64-encoded for preview.
@@ -1226,8 +1242,23 @@ pub(crate) fn render_and_ocr_pdf(pdf_path: &str, dpi: u32, ocr_precision: Option
 }
 
 #[cfg(all(not(target_os = "windows"), feature = "ocr"))]
-pub(crate) fn render_and_ocr_pdf(_pdf_path: &str, _dpi: u32) -> Result<Vec<RenderedOcrPage>, String> {
-    Ok(vec![])
+pub(crate) fn render_and_ocr_pdf(
+    pdf_path: &str,
+    dpi: u32,
+    ocr_precision: Option<&str>,
+) -> Result<Vec<RenderedOcrPage>, String> {
+    let pages = render_pdf_pages(pdf_path, dpi, false)?;
+    pages.into_iter().map(|page| {
+        let ocr_result = ocr_image(&page.image_data_url, None, ocr_precision)?;
+        Ok(RenderedOcrPage {
+            index: page.index,
+            image_data_url: page.image_data_url,
+            width: page.width,
+            height: page.height,
+            render_dpi: page.render_dpi,
+            ocr_result: Some(ocr_result),
+        })
+    }).collect()
 }
 
 // =====================================================

@@ -7,6 +7,7 @@
 - **前端**: `src/{index.html, styles.css, ocr.js, layout.js, print.js, app.js}`
 - **后端**: `src-tauri/src/{main.rs, lib.rs, pdf_engine.rs, pdfium_print.rs}`
 - **OFD/XML 解析**: `src-tauri/invoice-engine/` — 独立 crate（v2.0.6 从 ofd-engine 更名，v2.0.7 整合 XML 数电票）
+- **统一信息提取**: `src-tauri/invoice-extractor/` — 独立跨平台 crate，模块化解析 PDF/OFD/XML 与 OCR 结果
 - **双版本**: 轻量版 / OCR版（含 PP-OCRv5）
 
 ## 常用命令
@@ -97,6 +98,18 @@ npm run bump <版本号>    # 同步版本号到 Cargo.toml + tauri.conf.json
 - **金额三阶段**: 含税价 → 数学验证配对 → 区域解析
 - **中文大写兜底**: `parseChineseNumeral()` — 阿拉伯金额因字体/编码丢失时的 fallback
 - **OCR 跳过条件**: `_pdfTextExtracted && sellerName && amountTax > 0`
+
+### 统一发票信息提取 API
+
+- **Rust 入口**: `invoice_extractor::extract_file(path)`（无 OCR）或 `InvoiceExtractor::new(backend).extract_file(path, options)`
+- **桌面入口**: `window.extractInvoiceFile(filePath, options)` 只调用一次 `extract_invoice_file` IPC，不修改 `S.files` 或 UI 状态
+- **支持格式**: PDF / OFD / XML / JPG / JPEG / PNG / BMP / WebP / TIFF
+- **统一结果**: `{ success, filePath, fileName, fileType, pageCount, invoices[], warnings[] }`；多页 PDF 每页对应一个 `invoices[]` 项
+- **模块边界**: `model / parser / formats / extractor / backend / paddle` 分文件维护，禁止将新解析逻辑堆回 `invoice-engine/lib.rs`
+- **跨平台约束**: crate 不依赖 Tauri/WinRT/CoreGraphics；PDF/OFD/XML 使用纯 Rust，OCR 通过 `OcrBackend` trait 注入
+- **PP-OCRv5 后端**: `paddle-ocr` feature 提供 `PaddleOcrBackend`，直接读取 `src-tauri/models` 三个模型文件；应用用 `OnceLock` 复用引擎
+- **PDF OCR 适配**: `PdfPageRenderer` 隔离平台渲染；Tauri 适配层一次渲染整份 PDF、逐页消费缓存，避免多页 OCR 重复渲染
+- **OCR 行为**: `options.useOcr` 默认开启；轻量版可提取 PDF 文字层、OFD 和 XML，扫描 PDF 与图片需要 OCR 版
 
 ### 购销方识别优化 (v2.1.1)
 

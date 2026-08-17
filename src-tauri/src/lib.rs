@@ -72,6 +72,11 @@ fn show_error_dialog(message: &str) {
     }
 }
 use pdf_engine::{PrinterInfo, FileData, RenderedPage, LayoutRenderRequest, PdfTextResult};
+use invoice_extractor::{ExtractionOptions, InvoiceExtractor};
+#[cfg(not(feature = "ocr"))]
+use invoice_extractor::NoOcr;
+#[cfg(feature = "ocr")]
+use invoice_extractor::{PaddleOcrBackend, PdfPageRenderer};
 #[cfg(target_os = "windows")]
 use pdf_engine::ComGuard;
 #[cfg(feature = "ocr")]
@@ -367,6 +372,112 @@ async fn extract_pdf_texts(pdf_path: String, page_indices: Vec<u32>) -> Result<s
     })
     .await
     .map_err(|e| format!("PDF文字提取任务失败: {}", e))?
+}
+
+#[cfg(feature = "ocr")]
+#[derive(Default)]
+struct AppPdfPageRenderer {
+    cache: std::sync::Mutex<Option<AppPdfRenderCache>>,
+}
+
+#[cfg(feature = "ocr")]
+struct AppPdfRenderCache {
+    path: std::path::PathBuf,
+    dpi: u32,
+    pages: std::collections::HashMap<u32, image::DynamicImage>,
+}
+
+#[cfg(feature = "ocr")]
+impl PdfPageRenderer for AppPdfPageRenderer {
+    fn render_page(
+        &self,
+        path: &std::path::Path,
+        page_index: u32,
+        dpi: u32,
+    ) -> Result<image::DynamicImage, String> {
+        let mut cache = self.cache.lock()
+            .map_err(|error| format!("PDF OCR 页面缓存锁失败: {error}"))?;
+        let cache_matches = cache.as_ref()
+            .map(|cached| {
+                cached.path == path
+                    && cached.dpi == dpi
+                    && cached.pages.contains_key(&page_index)
+            })
+            .unwrap_or(false);
+        if !cache_matches {
+            let path_text = path.to_str().ok_or_else(|| "PDF 路径不是有效 UTF-8".to_string())?;
+            let pages = pdf_engine::render_pdf_pages(path_text, dpi, false)?
+                .into_iter()
+                .map(|page| {
+                    pdf_engine::decode_base64_image(&page.image_data_url)
+                        .map(|image| (page.index, image))
+                })
+                .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+            *cache = Some(AppPdfRenderCache {
+                path: path.to_path_buf(),
+                dpi,
+                pages,
+            });
+        }
+        cache.as_mut()
+            .and_then(|cached| cached.pages.remove(&page_index))
+            .ok_or_else(|| format!("页码超出范围: 请求第{}页", page_index + 1))
+    }
+}
+
+#[cfg(feature = "ocr")]
+fn invoice_ocr_backend() -> Result<&'static PaddleOcrBackend<AppPdfPageRenderer>, String> {
+    static BACKEND: std::sync::OnceLock<Result<PaddleOcrBackend<AppPdfPageRenderer>, String>> =
+        std::sync::OnceLock::new();
+    match BACKEND.get_or_init(|| {
+        PaddleOcrBackend::with_renderer(
+            resolve_invoice_ocr_model_dir()?,
+            AppPdfPageRenderer::default(),
+        )
+    }) {
+        Ok(backend) => Ok(backend),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+#[cfg(feature = "ocr")]
+fn resolve_invoice_ocr_model_dir() -> Result<std::path::PathBuf, String> {
+    let development = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models");
+    let executable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+    let mut candidates = vec![development];
+    if let Some(directory) = executable_dir {
+        candidates.push(directory.join("models"));
+        candidates.push(directory);
+    }
+    candidates.into_iter()
+        .find(|directory| directory.join("PP-OCRv5_mobile_det.mnn").is_file()
+            && directory.join("PP-OCRv5_mobile_rec.mnn").is_file()
+            && directory.join("ppocr_keys_v5.txt").is_file())
+        .ok_or_else(|| "未找到 PP-OCRv5 模型目录".to_string())
+}
+
+/// Extract all invoice fields through the platform-neutral invoice-extractor crate.
+/// File IO, PDF parsing and field recognition run off the IPC thread.
+#[command]
+async fn extract_invoice_file(
+    file_path: String,
+    options: Option<ExtractionOptions>,
+) -> Result<invoice_extractor::InvoiceFileResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(feature = "ocr")]
+        {
+            return InvoiceExtractor::new(invoice_ocr_backend()?)
+                .extract_file(file_path, options.unwrap_or_default());
+        }
+        #[cfg(not(feature = "ocr"))]
+        {
+            InvoiceExtractor::new(NoOcr).extract_file(file_path, options.unwrap_or_default())
+        }
+    })
+    .await
+    .map_err(|e| format!("发票信息提取任务失败: {e}"))?
 }
 
 /// Get user Downloads directory path
@@ -1452,6 +1563,7 @@ pub fn run() {
         check_ocr_available,
         extract_pdf_text,
         extract_pdf_texts,
+        extract_invoice_file,
         get_app_version,
         get_config,
         get_temp_dir,
@@ -1491,6 +1603,7 @@ pub fn run() {
         check_ocr_available,
         extract_pdf_text,
         extract_pdf_texts,
+        extract_invoice_file,
         get_app_version,
         get_config,
         get_temp_dir,
