@@ -117,6 +117,18 @@ function calculateLayout(settings, pxPerMm) {
 }
 
 /**
+ * Effective dimensions used by layout calculations.
+ * White-edge trimming changes the image aspect ratio, so the cropped size must
+ * replace the original preview size while the feature is enabled.
+ */
+function getInvoiceDisplayDimensions(fileObj) {
+  if (S.feat.trimWhite && fileObj.trimmedUrl && fileObj.trimmedW > 0 && fileObj.trimmedH > 0) {
+    return { w: fileObj.trimmedW, h: fileObj.trimmedH };
+  }
+  return { w: fileObj.ow || 1, h: fileObj.oh || 1 };
+}
+
+/**
  * Calculate rotation for a file in a slot.
  * @param {Object} fileObj - File object with ow, oh, rotation
  * @param {Object} slot - Slot with w, h
@@ -126,7 +138,8 @@ function calculateLayout(settings, pxPerMm) {
 function getRotation(fileObj, slot, settings) {
   if (settings.globalRotation === 'auto') {
     var isSlotL = slot.w > slot.h;
-    var isImgL = (fileObj.ow || 1) > (fileObj.oh || 1);
+    var dimensions = getInvoiceDisplayDimensions(fileObj);
+    var isImgL = dimensions.w > dimensions.h;
     return (isSlotL !== isImgL) ? (fileObj.rotation + 90) % 360 : fileObj.rotation;
   }
   return ((parseInt(settings.globalRotation) || 0) + fileObj.rotation) % 360;
@@ -185,8 +198,9 @@ function renderPage(pageFiles, pi, total, s) {
         transforms = 'translate(' + txPx.toFixed(1) + 'px, ' + tyPx.toFixed(1) + 'px) ' + transforms;
       }
       // Calculate contained image dimensions for border to follow invoice
-      var imgObjW = f.ow || 1;
-      var imgObjH = f.oh || 1;
+      var dimensions = getInvoiceDisplayDimensions(f);
+      var imgObjW = dimensions.w;
+      var imgObjH = dimensions.h;
       var containedW, containedH;
       if (s.fitMode === 'original') {
         containedW = imgObjW;
@@ -418,8 +432,9 @@ function onSlotMouseMove(e) {
     // Clamp: limit offset so invoice doesn't go fully outside slot
     var slot = layout.slots[_slotDrag.idx];
     var f = _slotDrag.fileObj;
-    var imgW = f.ow || 1;
-    var imgH = f.oh || 1;
+    var dimensions = getInvoiceDisplayDimensions(f);
+    var imgW = dimensions.w;
+    var imgH = dimensions.h;
     var s = _slotDrag.cachedSettings;
     var displayW, displayH;
     if (s.fitMode === 'fill') {

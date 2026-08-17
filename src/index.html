@@ -107,20 +107,21 @@
         </div>
         <div class="sec">
           <div class="sec-title">📐 边距 (mm)</div>
-          <div class="row"><label class="lbl">上</label><div class="rr ctrl"><input type="range" id="marginTop" min="0" max="30" value="5" oninput="syncSlider(this,'marginTopN');updatePreview()"><input type="number" id="marginTopN" min="0" max="30" value="5" style="width:64px" onchange="syncRange(this,'marginTop');updatePreview()"></div></div>
-          <div class="row"><label class="lbl">下</label><div class="rr ctrl"><input type="range" id="marginBottom" min="0" max="30" value="5" oninput="syncSlider(this,'marginBottomN');updatePreview()"><input type="number" id="marginBottomN" min="0" max="30" value="5" style="width:64px" onchange="syncRange(this,'marginBottom');updatePreview()"></div></div>
-          <div class="row"><label class="lbl">左</label><div class="rr ctrl"><input type="range" id="marginLeft" min="0" max="30" value="5" oninput="syncSlider(this,'marginLeftN');updatePreview()"><input type="number" id="marginLeftN" min="0" max="30" value="5" style="width:64px" onchange="syncRange(this,'marginLeft');updatePreview()"></div></div>
-          <div class="row"><label class="lbl">右</label><div class="rr ctrl"><input type="range" id="marginRight" min="0" max="30" value="5" oninput="syncSlider(this,'marginRightN');updatePreview()"><input type="number" id="marginRightN" min="0" max="30" value="5" style="width:64px" onchange="syncRange(this,'marginRight');updatePreview()"></div></div>
+          <div class="row"><label class="lbl">上</label><div class="rr ctrl"><input type="range" id="marginTop" min="0" max="30" value="2" oninput="syncSlider(this,'marginTopN');updatePreview()"><input type="number" id="marginTopN" min="0" max="30" value="2" style="width:64px" onchange="syncRange(this,'marginTop');updatePreview()"></div></div>
+          <div class="row"><label class="lbl">下</label><div class="rr ctrl"><input type="range" id="marginBottom" min="0" max="30" value="2" oninput="syncSlider(this,'marginBottomN');updatePreview()"><input type="number" id="marginBottomN" min="0" max="30" value="2" style="width:64px" onchange="syncRange(this,'marginBottom');updatePreview()"></div></div>
+          <div class="row"><label class="lbl">左</label><div class="rr ctrl"><input type="range" id="marginLeft" min="0" max="30" value="2" oninput="syncSlider(this,'marginLeftN');updatePreview()"><input type="number" id="marginLeftN" min="0" max="30" value="2" style="width:64px" onchange="syncRange(this,'marginLeft');updatePreview()"></div></div>
+          <div class="row"><label class="lbl">右</label><div class="rr ctrl"><input type="range" id="marginRight" min="0" max="30" value="2" oninput="syncSlider(this,'marginRightN');updatePreview()"><input type="number" id="marginRightN" min="0" max="30" value="2" style="width:64px" onchange="syncRange(this,'marginRight');updatePreview()"></div></div>
           <div style="display:flex;gap:6px;margin-top:6px">
             <button class="btn btn-sm" style="flex:1" onclick="setMP(10,10,10,10)">10mm</button>
             <button class="btn btn-sm" style="flex:1" onclick="setMP(5,5,5,5)">5mm</button>
+            <button class="btn btn-sm btn-primary" style="flex:1" onclick="setCompactSpacing()">紧凑</button>
             <button class="btn btn-sm" style="flex:1" onclick="setMP(0,0,0,0)">0</button>
           </div>
         </div>
         <div class="sec" id="gapSec">
           <div class="sec-title">↔ 间距 (mm)</div>
-          <div class="row"><label class="lbl">列间距</label><div class="rr ctrl"><input type="range" id="gapH" min="0" max="20" value="3" oninput="syncSlider(this,'gapHN');updatePreview()"><input type="number" id="gapHN" min="0" max="20" value="3" style="width:64px" onchange="syncRange(this,'gapH');updatePreview()"></div></div>
-          <div class="row"><label class="lbl">行间距</label><div class="rr ctrl"><input type="range" id="gapV" min="0" max="20" value="3" oninput="syncSlider(this,'gapVN');updatePreview()"><input type="number" id="gapVN" min="0" max="20" value="3" style="width:64px" onchange="syncRange(this,'gapV');updatePreview()"></div></div>
+          <div class="row"><label class="lbl">列间距</label><div class="rr ctrl"><input type="range" id="gapH" min="0" max="20" value="1" oninput="syncSlider(this,'gapHN');updatePreview()"><input type="number" id="gapHN" min="0" max="20" value="1" style="width:64px" onchange="syncRange(this,'gapH');updatePreview()"></div></div>
+          <div class="row"><label class="lbl">行间距</label><div class="rr ctrl"><input type="range" id="gapV" min="0" max="20" value="1" oninput="syncSlider(this,'gapVN');updatePreview()"><input type="number" id="gapVN" min="0" max="20" value="1" style="width:64px" onchange="syncRange(this,'gapV');updatePreview()"></div></div>
         </div>
         <div class="sec">
           <div class="sec-title">🔍 缩放模式</div>

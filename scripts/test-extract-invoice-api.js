@@ -4,6 +4,8 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync('src/ocr.js', 'utf8');
 const appSource = fs.readFileSync('src/app.js', 'utf8');
+const layoutSource = fs.readFileSync('src/layout.js', 'utf8');
+const indexSource = fs.readFileSync('src/index.html', 'utf8');
 const publicApiStart = source.indexOf('/**\n * Extract all recognizable invoice fields');
 const publicApiEnd = source.indexOf('// =====================================================\n// v1.7.0', publicApiStart);
 assert.ok(publicApiStart >= 0 && publicApiEnd > publicApiStart, 'public API block must exist');
@@ -165,7 +167,31 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
   assert.match(details, /柒拾捌圆捌角整/);
   assert.match(details, /\*其他食品\*素牛筋20g/);
 
-  process.stdout.write('invoice extraction API and directory UI tests passed\n');
+  const dimensionsStart = layoutSource.indexOf('function getInvoiceDisplayDimensions');
+  const dimensionsEnd = layoutSource.indexOf('/**\n * Calculate rotation', dimensionsStart);
+  assert.ok(dimensionsStart >= 0 && dimensionsEnd > dimensionsStart);
+  vm.runInContext(layoutSource.slice(dimensionsStart, dimensionsEnd), context);
+  context.S = { feat: { trimWhite: true } };
+  assert.deepEqual(JSON.parse(JSON.stringify(context.getInvoiceDisplayDimensions({
+    ow: 1200,
+    oh: 1800,
+    trimmedUrl: 'data:image/png;base64,test',
+    trimmedW: 1100,
+    trimmedH: 700
+  }))), { w: 1100, h: 700 });
+  context.S.feat.trimWhite = false;
+  assert.deepEqual(JSON.parse(JSON.stringify(context.getInvoiceDisplayDimensions({
+    ow: 1200,
+    oh: 1800,
+    trimmedUrl: 'data:image/png;base64,test',
+    trimmedW: 1100,
+    trimmedH: 700
+  }))), { w: 1200, h: 1800 });
+  assert.match(indexSource, /id="marginTop"[^>]+value="2"/);
+  assert.match(indexSource, /id="gapH"[^>]+value="1"/);
+  assert.match(indexSource, /onclick="setCompactSpacing\(\)"/);
+
+  process.stdout.write('invoice extraction API, directory UI, and compact layout tests passed\n');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

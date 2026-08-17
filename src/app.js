@@ -61,6 +61,9 @@ function createFileObj(opts) {
     type: opts.type || '',
     checked: true,
     previewUrl: opts.previewUrl || '',
+    trimmedUrl: opts.trimmedUrl || '',
+    trimmedW: opts.trimmedW || 0,
+    trimmedH: opts.trimmedH || 0,
     copies: 1,
     rotation: 0,
     note: '',
@@ -731,6 +734,7 @@ async function processFileDataList(fileDataList) {
   clearInterval(updateInterval);
   renderFileList(); updatePreview(); updatePrintBtn(); updateSummaryBtn();
 
+  if (S.feat.trimWhite) await processTrim(true);
   _loadingBatchActive = false;
 
   if (_ocrQueue.length === 0 && _ocrRunning === 0) {
@@ -835,6 +839,7 @@ async function processFiles(files) {
   }
 
   // Loading batch complete
+  if (S.feat.trimWhite) await processTrim(true);
   _loadingBatchActive = false;
 
   if (_ocrQueue.length === 0 && _ocrRunning === 0) {
@@ -948,6 +953,7 @@ async function processFilesIncremental(paths, extractedByPath, completionMessage
     await nextFrame();
   }
 
+  if (S.feat.trimWhite) await processTrim(true);
   _loadingBatchActive = false;
   document.getElementById('fileList').classList.remove('batch-loading');
 
@@ -2178,6 +2184,8 @@ function toggleTextEnhance() {
     f._origImg = null;
     f._enhanced = false;
     f.trimmedUrl = null; // 白边缓存基于原图，需按还原后的图重算
+    f.trimmedW = 0;
+    f.trimmedH = 0;
     updateAdjPanel();
     updatePreview();
     renderFileList();
@@ -2198,6 +2206,8 @@ function toggleTextEnhance() {
       f._enhanced = true;
       f._enhancing = false;
       f.trimmedUrl = null; // 白边缓存基于原图，需按增强后的图重算
+      f.trimmedW = 0;
+      f.trimmedH = 0;
       updateAdjPanel();
       updatePreview();
       renderFileList();
@@ -2256,11 +2266,11 @@ function setSlotAlignment(alignH, alignV) {
   var slot = layout.slots[S.selectedSlot];
   if (!slot) return;
 
-  // Use unrotated image dimensions — same as renderPage.
-  // renderPage computes wrapper box size from f.ow/f.oh (unrotated),
-  // then applies rotation as a CSS transform. Alignment must match.
-  var imgObjW = f.ow || 1;
-  var imgObjH = f.oh || 1;
+  // Use the same effective dimensions as renderPage. When white-edge trimming
+  // is active, the cropped aspect ratio determines alignment.
+  var dimensions = getInvoiceDisplayDimensions(f);
+  var imgObjW = dimensions.w;
+  var imgObjH = dimensions.h;
 
   var slotW_mm = slot.w / MM2PX;
   var slotH_mm = slot.h / MM2PX;
@@ -2466,29 +2476,52 @@ function setMP(t, b, l, r) {
   });
   updatePreview();
 }
+function setCompactSpacing() {
+  setMP(2, 2, 2, 2);
+  [['gapH', 'gapHN'], ['gapV', 'gapVN']].forEach(function(ids) {
+    document.getElementById(ids[0]).value = 1;
+    document.getElementById(ids[1]).value = 1;
+  });
+  saveSettings();
+  updatePreview();
+}
 function changeCopies(d) { var e = document.getElementById('copies'); e.value = Math.max(1, Math.min(99, parseInt(e.value) + d)); updatePreview(); }
 
+function readImageDimensions(dataUrl) {
+  return new Promise(function(resolve) {
+    var image = new Image();
+    image.onload = function() { resolve({ w: image.naturalWidth || 0, h: image.naturalHeight || 0 }); };
+    image.onerror = function() { resolve({ w: 0, h: 0 }); };
+    image.src = dataUrl;
+  });
+}
+
 // Trim whitespace — now delegates to Rust backend (10-50x faster)
-async function processTrim() {
+async function processTrim(silent) {
   if (!isTauri || !invoke) {
-    toast('白边裁剪需要桌面版');
+    if (!silent) toast('白边裁剪需要桌面版');
     return;
   }
-  showLoading('裁剪白边...');
+  if (!silent) showLoading('裁剪白边...');
   try {
     for (var i = 0; i < S.files.length; i++) {
       var f = S.files[i];
       if (f.previewUrl && !f.trimmedUrl) {
         f.trimmedUrl = await invoke('trim_image', { dataUrl: f.previewUrl });
       }
+      if (f.trimmedUrl && (!f.trimmedW || !f.trimmedH)) {
+        var dimensions = await readImageDimensions(f.trimmedUrl);
+        f.trimmedW = dimensions.w;
+        f.trimmedH = dimensions.h;
+      }
     }
-    hideLoading();
+    if (!silent) hideLoading();
     updatePreview();
-    toast('裁剪完成');
+    if (!silent) toast('裁剪完成');
   } catch (err) {
-    hideLoading();
+    if (!silent) hideLoading();
     console.error('[Trim] 裁剪失败:', err);
-    toast('裁剪失败: ' + String(err));
+    if (!silent) toast('裁剪失败: ' + String(err));
   }
 }
 
@@ -2683,6 +2716,7 @@ function updateSummaryBtn() { var btn = document.getElementById('summaryBtn'); i
 // =====================================================
 function saveSettings() {
   var o = {
+    spacingModel: 'compact-v1',
     layout: { cols: S.layout.cols, rows: S.layout.rows },
     paperSize: document.getElementById('paperSize').value,
     orientation: document.getElementById('orientation').value,
@@ -2768,6 +2802,13 @@ function loadSettings() {
   if (!raw) return;
   var o;
   try { o = JSON.parse(raw); } catch(e) { return; }
+  var legacyDefaultSpacing = !o.spacingModel &&
+    ['marginTop','marginBottom','marginLeft','marginRight'].every(function(key) { return Number(o[key]) === 5; }) &&
+    Number(o.gapH) === 3 && Number(o.gapV) === 3;
+  if (legacyDefaultSpacing) {
+    o.marginTop = 2; o.marginBottom = 2; o.marginLeft = 2; o.marginRight = 2;
+    o.gapH = 1; o.gapV = 1;
+  }
   if (o.layout) {
     S.layout = { cols: o.layout.cols || 1, rows: o.layout.rows || 1 };
     document.getElementById('customRows').value = S.layout.rows;
@@ -2969,12 +3010,12 @@ function resetSettings() {
   document.getElementById('orientation').value = 'landscape';
   document.getElementById('customRows').value = 1;
   document.getElementById('customCols').value = 1;
-  document.getElementById('marginTop').value = 5; document.getElementById('marginTopN').value = 5;
-  document.getElementById('marginBottom').value = 5; document.getElementById('marginBottomN').value = 5;
-  document.getElementById('marginLeft').value = 5; document.getElementById('marginLeftN').value = 5;
-  document.getElementById('marginRight').value = 5; document.getElementById('marginRightN').value = 5;
-  document.getElementById('gapH').value = 3; document.getElementById('gapHN').value = 3;
-  document.getElementById('gapV').value = 3; document.getElementById('gapVN').value = 3;
+  document.getElementById('marginTop').value = 2; document.getElementById('marginTopN').value = 2;
+  document.getElementById('marginBottom').value = 2; document.getElementById('marginBottomN').value = 2;
+  document.getElementById('marginLeft').value = 2; document.getElementById('marginLeftN').value = 2;
+  document.getElementById('marginRight').value = 2; document.getElementById('marginRightN').value = 2;
+  document.getElementById('gapH').value = 1; document.getElementById('gapHN').value = 1;
+  document.getElementById('gapV').value = 1; document.getElementById('gapVN').value = 1;
   document.getElementById('fitMode').value = 'fit';
   document.getElementById('globalRotation').value = '0';
   document.getElementById('copies').value = 1;

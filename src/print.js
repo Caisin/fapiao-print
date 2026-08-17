@@ -71,9 +71,10 @@ function buildLayoutRequest(files, settings) {
     if (!key) return null;
     if (!(key in fileMap)) {
       fileMap[key] = fileSpecs.length;
+      var displayDimensions = getInvoiceDisplayDimensions(fileObj);
       var spec = {
-        ow: fileObj.ow || 0,
-        oh: fileObj.oh || 0,
+        ow: displayDimensions.w,
+        oh: displayDimensions.h,
         rotation: fileObj.rotation || 0,
       };
       // Determine source type and path strategy
@@ -154,7 +155,8 @@ function getEffectiveRotation(fileObj, slotIdx, settings, layout) {
   var slot = layout.slots[slotIdx];
   if (settings.globalRotation === 'auto') {
     var isSlotL = slot.w > slot.h;
-    var isImgL = (fileObj.ow || 1) > (fileObj.oh || 1);
+    var dimensions = getInvoiceDisplayDimensions(fileObj);
+    var isImgL = dimensions.w > dimensions.h;
     return (isSlotL !== isImgL) ? (fileObj.rotation + 90) % 360 : fileObj.rotation;
   }
   return ((parseInt(settings.globalRotation) || 0) + (fileObj.rotation || 0)) % 360;
@@ -732,7 +734,8 @@ function fallbackPrint(files, s) {
         var slot = { w: slotW, h: slotH };
         if (s.globalRotation === 'auto') {
           var isSlotL = slotW > slotH;
-          var isImgL = (f.ow || 1) > (f.oh || 1);
+          var dimensions = getInvoiceDisplayDimensions(f);
+          var isImgL = dimensions.w > dimensions.h;
           rot = (isSlotL !== isImgL) ? ((f.rotation || 0) + 90) % 360 : (f.rotation || 0);
         } else {
           rot = ((parseInt(s.globalRotation) || 0) + (f.rotation || 0)) % 360;
