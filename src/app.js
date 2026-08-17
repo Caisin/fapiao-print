@@ -610,7 +610,15 @@ async function triggerDirectoryUpload() {
       addPath(fileResult.filePath);
       extractedByPath[fileResult.filePath] = fileResult;
     });
-    (batch.errors || []).forEach(function(error) { addPath(error.filePath); });
+    (batch.errors || []).forEach(function(error) {
+      addPath(error.filePath);
+      extractedByPath[error.filePath] = {
+        success: false,
+        filePath: error.filePath,
+        invoices: [],
+        warnings: [error.error || '目录解析失败']
+      };
+    });
     paths.sort(function(left, right) { return left < right ? -1 : (left > right ? 1 : 0); });
     if (paths.length === 0) {
       hideToast();
@@ -1322,6 +1330,7 @@ function applyExtractedInvoiceInfo(fileObj, info) {
 function applyExtractedFileResult(fileObj, fileResult, pageIndex) {
   if (!fileObj || !fileResult) return;
   applyExtractedInvoiceInfo(fileObj, findExtractedInvoice(fileResult, pageIndex));
+  fileObj._extractionSuccess = fileResult.success !== false;
   fileObj._extractionWarnings = Array.isArray(fileResult.warnings) ? fileResult.warnings.slice() : [];
 }
 
@@ -1632,12 +1641,151 @@ function getFilteredFiles() {
   });
 }
 
+function normalizeInvoiceNo(value) {
+  return String(value || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+}
+
+function getInvoiceSourceKey(fileObj) {
+  return fileObj._pdfPath || fileObj._filePath || ('memory:' + String(fileObj.id || fileObj.name || ''));
+}
+
+function mergeInvoicePageRecords(pageFiles, sourceKey, invoiceNo) {
+  var best = pageFiles[0];
+  var bestScore = -1;
+  pageFiles.forEach(function(fileObj) {
+    var score = 0;
+    if (fileObj.invoiceNo) score += 4;
+    if (fileObj.amountTax > 0 || fileObj.amount > 0) score += 4;
+    if (fileObj.invoiceDate) score += 2;
+    if (fileObj.sellerName) score += 2;
+    if (fileObj.buyerName) score += 1;
+    score += Array.isArray(fileObj.lineItems) ? Math.min(fileObj.lineItems.length, 3) : 0;
+    if (score > bestScore) { best = fileObj; bestScore = score; }
+  });
+
+  var record = Object.assign({}, best);
+  var sourcePath = best._pdfPath || best._filePath || '';
+  record.name = sourcePath ? sourcePath.split(/[\\/]/).pop() : best.name;
+  record.invoiceNo = invoiceNo || best.invoiceNo || '';
+  record._sourceKey = sourceKey;
+  record._sourcePath = sourcePath;
+  record._sourceFiles = pageFiles.slice();
+  record._primaryFile = best;
+  record._pageCount = pageFiles.length;
+  record._sourceFileCount = 1;
+
+  var textFields = ['invoiceDate', 'invoiceType', 'buyerName', 'buyerCreditCode', 'sellerName',
+    'sellerCreditCode', 'taxRate', 'amountUppercase', 'invoiceClerk', 'extractionSource'];
+  textFields.forEach(function(key) {
+    if (record[key]) return;
+    for (var i = 0; i < pageFiles.length; i++) {
+      if (pageFiles[i][key]) { record[key] = pageFiles[i][key]; break; }
+    }
+  });
+  ['amount', 'amountTax', 'amountNoTax', 'taxAmount'].forEach(function(key) {
+    record[key] = pageFiles.reduce(function(max, fileObj) {
+      return Math.max(max, Number(fileObj[key]) || 0);
+    }, 0);
+  });
+
+  var lineItems = [];
+  var itemPageSignatures = {};
+  pageFiles.forEach(function(fileObj) {
+    var items = fileObj.lineItems || [];
+    if (items.length === 0) return;
+    var signature = JSON.stringify(items);
+    if (itemPageSignatures[signature]) return;
+    itemPageSignatures[signature] = true;
+    lineItems = lineItems.concat(items);
+  });
+  record.lineItems = lineItems;
+
+  var warnings = [];
+  pageFiles.forEach(function(fileObj) {
+    (fileObj._extractionWarnings || []).forEach(function(warning) {
+      if (warnings.indexOf(warning) < 0) warnings.push(warning);
+    });
+  });
+  record._extractionWarnings = warnings;
+
+  var issues = [];
+  if (pageFiles.some(function(fileObj) { return fileObj._extractionSuccess === false; })) issues.push('目录解析失败或信息不完整');
+  if (!record.invoiceNo) issues.push('缺少发票号码');
+  if (!(record.amountTax > 0 || record.amount > 0 || record.amountNoTax > 0)) issues.push('缺少金额');
+  if (!record.invoiceDate) issues.push('缺少开票日期');
+  if (!record.sellerName) issues.push('缺少销售方');
+  if (warnings.length > 0) issues.push('存在解析警告');
+  record._parseIssues = issues;
+  record._parseStatus = issues.length === 0
+    ? 'ok'
+    : (issues.indexOf('目录解析失败或信息不完整') >= 0 || !record.invoiceNo || !(record.amountTax > 0 || record.amount > 0 || record.amountNoTax > 0) ? 'error' : 'review');
+  return record;
+}
+
+// Convert layout page objects into file/invoice-level records for finance views.
+// Multiple pages from one PDF remain separate for printing but count once here.
+function getInvoiceRecords(files, markSourceFiles) {
+  var sourceGroups = {};
+  (files || []).forEach(function(fileObj) {
+    if (!fileObj || fileObj._loading) return;
+    var sourceKey = getInvoiceSourceKey(fileObj);
+    if (!sourceGroups[sourceKey]) sourceGroups[sourceKey] = [];
+    sourceGroups[sourceKey].push(fileObj);
+  });
+
+  var records = [];
+  Object.keys(sourceGroups).forEach(function(sourceKey) {
+    var pageFiles = sourceGroups[sourceKey];
+    var numbered = {};
+    var unnumbered = [];
+    pageFiles.forEach(function(fileObj) {
+      var number = normalizeInvoiceNo(fileObj.invoiceNo);
+      if (!number) unnumbered.push(fileObj);
+      else {
+        if (!numbered[number]) numbered[number] = [];
+        numbered[number].push(fileObj);
+      }
+    });
+    var numbers = Object.keys(numbered);
+    if (numbers.length <= 1) {
+      records.push(mergeInvoicePageRecords(pageFiles, sourceKey, numbers[0] || ''));
+      return;
+    }
+    numbers.forEach(function(number, index) {
+      var pages = numbered[number].slice();
+      if (index === 0) pages = pages.concat(unnumbered);
+      records.push(mergeInvoicePageRecords(pages, sourceKey + '#' + number, number));
+    });
+  });
+
+  var numberCounts = {};
+  records.forEach(function(record) {
+    var number = normalizeInvoiceNo(record.invoiceNo);
+    if (number) numberCounts[number] = (numberCounts[number] || 0) + 1;
+  });
+  records.forEach(function(record) {
+    var number = normalizeInvoiceNo(record.invoiceNo);
+    record._duplicateInvoice = !!(number && numberCounts[number] > 1);
+    if (markSourceFiles !== false) {
+      record._sourceFiles.forEach(function(fileObj) {
+        fileObj._duplicateInvoice = record._duplicateInvoice;
+        fileObj._parseStatus = record._parseStatus;
+        fileObj._parseIssues = record._parseIssues;
+      });
+    }
+  });
+  return records;
+}
+
 function renderFileList() {
   var list = document.getElementById('fileList');
   var scrollTop = list.scrollTop;
   var filtered = getFilteredFiles();
-  var sel = filtered.filter(function(f) { return f.checked; }).length;
-  document.getElementById('fileCount').textContent = filtered.length + ' 张，已选 ' + sel;
+  getInvoiceRecords(S.files); // Status and duplicate detection always use the complete import set.
+  var invoiceRecords = getInvoiceRecords(filtered, false);
+  var selectedRecords = getInvoiceRecords(filtered.filter(function(f) { return f.checked; }), false);
+  var pageSuffix = filtered.length !== invoiceRecords.length ? ' / ' + filtered.length + ' 页' : '';
+  document.getElementById('fileCount').textContent = invoiceRecords.length + ' 份' + pageSuffix + '，已选 ' + selectedRecords.length;
   var summaryEl = document.getElementById('amountSummary');
   if (!S.files.length) { list.innerHTML = ''; if (summaryEl) summaryEl.style.display = 'none'; updateAmountSummary(); return; }
   if (summaryEl) summaryEl.style.display = 'flex';
@@ -1656,6 +1804,10 @@ function renderFileList() {
     var cb = f.copies > 1 ? '<span class="copy-badge">' + f.copies + '份</span>' : '';
     var rb = f.rotation ? '<span class="rot-badge">' + f.rotation + '°</span>' : '';
     var ab = buildAmtBadge(f);
+    var issueBadges = '';
+    if (f._duplicateInvoice) issueBadges += '<span class="invoice-status-badge duplicate" title="发票号码与其他文件重复">重复</span>';
+    if (f._parseStatus === 'error') issueBadges += '<span class="invoice-status-badge error" title="' + escHtml((f._parseIssues || []).join('；')) + '">解析异常</span>';
+    else if (f._parseStatus === 'review') issueBadges += '<span class="invoice-status-badge review" title="' + escHtml((f._parseIssues || []).join('；')) + '">需复核</span>';
     var sb = f.sellerName ? '<span class="' + (f._isTicket ? 'ticket-badge' : f._isNonTax ? 'nontax-badge' : 'seller-badge') + '" title="' + escHtml(f.sellerCreditCode || f.sellerName) + '">' + escHtml(f.sellerName) + '</span>' : '';
     // XSS FIX: escHtml(f.name) in both title and display text
     // XSS FIX: escHtml(f.previewUrl) in img src, escHtml(f.type) in type-badge
@@ -1680,7 +1832,7 @@ function renderFileList() {
     return '<div class="' + cls + '" data-idx="' + i + '" data-printed="' + (f._printed ? '1' : '0') + '"' + hideStyle + ' onclick="clickFileItem(' + i + ',event)" ondblclick="openInvModal(' + i + ')">' +
       '<div class="file-check ' + (f.checked ? 'checked' : '') + '" onclick="togCheck(' + i + ')"></div>' +
       '<div class="file-thumb">' + thumbContent + '<div class="type-badge">' + typeBadgeText + '</div></div>' +
-      '<div class="file-info"><div class="file-name" title="' + escHtml(f.name) + '">' + escHtml(f.name) + '</div>' + (sb ? '<div class="file-seller" title="' + escHtml(f.sellerName) + '">' + sb + '</div>' : '') + '<div class="file-meta">' + metaActions + '</div></div>' +
+      '<div class="file-info"><div class="file-name" title="' + escHtml(f.name) + '">' + escHtml(f.name) + '</div>' + (issueBadges ? '<div class="invoice-status-row">' + issueBadges + '</div>' : '') + (sb ? '<div class="file-seller" title="' + escHtml(f.sellerName) + '">' + sb + '</div>' : '') + '<div class="file-meta">' + metaActions + '</div></div>' +
     '</div>';
   }).join('');
 
@@ -1865,7 +2017,7 @@ function moveFile(i, dir) {
 function updateAmountSummary() {
   var el = document.getElementById('amountSummary');
   if (!el) return;
-  var checked = S.files.filter(function(f) { return f.checked; });
+  var checked = getInvoiceRecords(S.files.filter(function(f) { return f.checked; }), false);
   var taxTotal = checked.reduce(function(s, f) { return s + (f.amountTax || 0); }, 0);
   var noTaxTotal = checked.reduce(function(s, f) { return s + (f.amountNoTax || 0); }, 0);
   var taxAmtTotal = checked.reduce(function(s, f) { return s + (f.taxAmount || 0); }, 0);
@@ -1883,9 +2035,9 @@ function updateAmountSummary() {
     return;
   }
 
-  var countHtml = '<span class="amt-count">' + withAmt + '/' + checked.length + ' 张已识别</span>';
+  var countHtml = '<span class="amt-count">' + withAmt + '/' + checked.length + ' 份已识别</span>';
   if (warnAmt > 0) {
-    countHtml += '<span class="amt-warn-count" title="' + warnAmt + ' 张发票金额校验失败（含税≠不含税+税额）">' + warnAmt + ' 张校验异常</span>';
+    countHtml += '<span class="amt-warn-count" title="' + warnAmt + ' 份发票金额校验失败（含税≠不含税+税额）">' + warnAmt + ' 份校验异常</span>';
   }
   var mode = S.amtMode || 'tax';
   var amtHtml = '';
@@ -1978,6 +2130,11 @@ function buildExtractorDetailsHtml(f) {
   var warnings = Array.isArray(f._extractionWarnings) && f._extractionWarnings.length > 0
     ? '<div class="invoice-detail-warnings">' + f._extractionWarnings.map(function(warning) { return escHtml(warning); }).join('<br>') + '</div>'
     : '';
+  var statusLabels = [];
+  if (f._duplicateInvoice) statusLabels.push('重复发票号');
+  if (f._parseStatus === 'error') statusLabels.push('解析异常');
+  else if (f._parseStatus === 'review') statusLabels.push('需复核');
+  if (statusLabels.length === 0) statusLabels.push('正常');
   var field = function(label, value, wide) {
     var display = value || '—';
     return '<div class="invoice-detail-field' + (wide ? ' wide' : '') + '"><span>' + label + '</span><strong title="' + escHtml(display) + '">' + escHtml(display) + '</strong></div>';
@@ -1989,6 +2146,7 @@ function buildExtractorDetailsHtml(f) {
       field('发票类型', invoiceTypeLabel(f.invoiceType)) +
       field('税率', f.taxRate || '—') +
       field('开票人', f.invoiceClerk || '—') +
+      field('数据状态', statusLabels.join(' / '), true) +
       field('金额校验', validation, true) +
       field('大写金额', f.amountUppercase || '—', true) +
     '</div>' + warnings +
@@ -2574,7 +2732,7 @@ function getSettings() {
 
 // Get checked files WITHOUT copies expansion (for summary table, etc.)
 function getCheckedFiles() {
-  return S.files.filter(function(f) { return f.checked && !f._loading; });
+  return getInvoiceRecords(S.files.filter(function(f) { return f.checked && !f._loading; }), false);
 }
 
 function markFilesAsPrinted(files) {
@@ -2708,7 +2866,14 @@ document.addEventListener('click', function(e) {
   }
 });
 function updatePrintBtn() { document.getElementById('printBtn').disabled = !S.files.some(function(f) { return f.checked; }); }
-function updateSummaryBtn() { var btn = document.getElementById('summaryBtn'); if (btn) btn.disabled = !S.files.some(function(f) { return f.checked; }); }
+function updateSummaryBtn() {
+  var disabled = !S.files.some(function(f) { return f.checked; });
+  var managerDisabled = !S.files.some(function(f) { return !f._loading; });
+  var btn = document.getElementById('summaryBtn');
+  var managerBtn = document.getElementById('invoiceManagerBtn');
+  if (btn) btn.disabled = disabled;
+  if (managerBtn) managerBtn.disabled = managerDisabled;
+}
 
 // =====================================================
 // Save settings & Preferences
@@ -3537,6 +3702,266 @@ function openUpdateAsset(url) {
 }
 
 // =====================================================
+// 发票管理 — 文件级查询与财务维度统计
+// =====================================================
+
+var _invoiceManagerRecords = [];
+var _invoiceManagerFiltered = [];
+var _invoiceManagerTab = 'details';
+
+function invoiceDateKey(value) {
+  var match = String(value || '').match(/(\d{4})[^\d]*(\d{1,2})[^\d]*(\d{1,2})/);
+  if (!match) return '';
+  return match[1] + '-' + String(match[2]).padStart(2, '0') + '-' + String(match[3]).padStart(2, '0');
+}
+
+function managerMoney(value) {
+  return '¥' + (Number(value) || 0).toFixed(2);
+}
+
+function populateManagerSelect(id, values, placeholder, labelFn) {
+  var select = document.getElementById(id);
+  if (!select) return;
+  var current = select.value;
+  select.innerHTML = '';
+  var empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = placeholder;
+  select.appendChild(empty);
+  values.forEach(function(value) {
+    var option = document.createElement('option');
+    option.value = value;
+    option.textContent = labelFn ? labelFn(value) : value;
+    select.appendChild(option);
+  });
+  if (values.indexOf(current) >= 0) select.value = current;
+}
+
+function uniqueManagerValues(records, key) {
+  var values = [];
+  records.forEach(function(record) {
+    var value = String(record[key] || '').trim();
+    if (value && values.indexOf(value) < 0) values.push(value);
+  });
+  return values.sort(function(a, b) { return a.localeCompare(b, 'zh-CN'); });
+}
+
+function openInvoiceManager() {
+  _invoiceManagerRecords = getInvoiceRecords(S.files);
+  if (_invoiceManagerRecords.length === 0) { toast('没有可管理的发票数据'); return; }
+  _invoiceManagerRecords.forEach(function(record, index) { record._managerIndex = index; });
+  populateManagerSelect('managerBuyer', uniqueManagerValues(_invoiceManagerRecords, 'buyerName'), '全部购买方');
+  populateManagerSelect('managerSeller', uniqueManagerValues(_invoiceManagerRecords, 'sellerName'), '全部销售方');
+  populateManagerSelect('managerType', uniqueManagerValues(_invoiceManagerRecords, 'invoiceType'), '全部类型', invoiceTypeLabel);
+
+  var sourceKeys = {};
+  S.files.forEach(function(fileObj) { if (!fileObj._loading) sourceKeys[getInvoiceSourceKey(fileObj)] = true; });
+  var duplicateCount = _invoiceManagerRecords.filter(function(record) { return record._duplicateInvoice; }).length;
+  document.getElementById('managerDatasetSummary').textContent =
+    Object.keys(sourceKeys).length + ' 个文件 · ' + S.files.filter(function(f) { return !f._loading; }).length + ' 个版面页' +
+    (duplicateCount ? ' · ' + duplicateCount + ' 条重复记录' : '');
+  document.getElementById('invoiceManagerModal').classList.remove('hidden');
+  renderInvoiceManager();
+}
+
+function closeInvoiceManager() {
+  document.getElementById('invoiceManagerModal').classList.add('hidden');
+}
+
+function clearInvoiceManagerFilters() {
+  ['managerKeyword', 'managerDateFrom', 'managerDateTo', 'managerAmountMin', 'managerAmountMax'].forEach(function(id) {
+    document.getElementById(id).value = '';
+  });
+  ['managerBuyer', 'managerSeller', 'managerType', 'managerStatus'].forEach(function(id) {
+    document.getElementById(id).value = '';
+  });
+  renderInvoiceManager();
+}
+
+function getManagerFilteredRecords() {
+  var keyword = document.getElementById('managerKeyword').value.trim().toLowerCase();
+  var dateFrom = document.getElementById('managerDateFrom').value;
+  var dateTo = document.getElementById('managerDateTo').value;
+  var buyer = document.getElementById('managerBuyer').value;
+  var seller = document.getElementById('managerSeller').value;
+  var type = document.getElementById('managerType').value;
+  var status = document.getElementById('managerStatus').value;
+  var amountMinText = document.getElementById('managerAmountMin').value;
+  var amountMaxText = document.getElementById('managerAmountMax').value;
+  var amountMin = amountMinText === '' ? null : Number(amountMinText);
+  var amountMax = amountMaxText === '' ? null : Number(amountMaxText);
+
+  return _invoiceManagerRecords.filter(function(record) {
+    var date = invoiceDateKey(record.invoiceDate);
+    var amount = Number(record.amountTax || record.amount || 0);
+    if (dateFrom && (!date || date < dateFrom)) return false;
+    if (dateTo && (!date || date > dateTo)) return false;
+    if (buyer && record.buyerName !== buyer) return false;
+    if (seller && record.sellerName !== seller) return false;
+    if (type && record.invoiceType !== type) return false;
+    if (amountMin !== null && amount < amountMin) return false;
+    if (amountMax !== null && amount > amountMax) return false;
+    if (status === 'duplicate' && !record._duplicateInvoice) return false;
+    if (status === 'error' && record._parseStatus !== 'error') return false;
+    if (status === 'review' && record._parseStatus !== 'review') return false;
+    if (status === 'ok' && (record._parseStatus !== 'ok' || record._duplicateInvoice)) return false;
+    if (keyword) {
+      var itemText = (record.lineItems || []).map(function(item) { return item.projectName || ''; }).join(' ');
+      var haystack = [record.invoiceNo, record.invoiceDate, record.buyerName, record.buyerCreditCode,
+        record.sellerName, record.sellerCreditCode, record.name, record.taxRate, itemText].join(' ').toLowerCase();
+      if (haystack.indexOf(keyword) < 0) return false;
+    }
+    return true;
+  });
+}
+
+function managerStatusHtml(record) {
+  var badges = [];
+  if (record._duplicateInvoice) badges.push('<span class="manager-status duplicate">重复</span>');
+  if (record._parseStatus === 'error') badges.push('<span class="manager-status error" title="' + escHtml((record._parseIssues || []).join('；')) + '">解析异常</span>');
+  else if (record._parseStatus === 'review') badges.push('<span class="manager-status review" title="' + escHtml((record._parseIssues || []).join('；')) + '">需复核</span>');
+  else if (!record._duplicateInvoice) badges.push('<span class="manager-status ok">正常</span>');
+  return badges.join(' ');
+}
+
+function renderManagerKpis(records) {
+  var amountTax = records.reduce(function(total, record) { return total + (Number(record.amountTax) || 0); }, 0);
+  var amountNoTax = records.reduce(function(total, record) { return total + (Number(record.amountNoTax) || 0); }, 0);
+  var taxAmount = records.reduce(function(total, record) { return total + (Number(record.taxAmount) || 0); }, 0);
+  var duplicateCount = records.filter(function(record) { return record._duplicateInvoice; }).length;
+  var issueCount = records.filter(function(record) { return record._parseStatus !== 'ok'; }).length;
+  var average = records.length ? amountTax / records.length : 0;
+  document.getElementById('managerKpis').innerHTML =
+    '<div class="manager-kpi"><span>发票记录</span><strong>' + records.length + '</strong></div>' +
+    '<div class="manager-kpi"><span>含税金额</span><strong>' + managerMoney(amountTax) + '</strong></div>' +
+    '<div class="manager-kpi"><span>不含税金额</span><strong>' + managerMoney(amountNoTax) + '</strong></div>' +
+    '<div class="manager-kpi"><span>税额</span><strong>' + managerMoney(taxAmount) + '</strong></div>' +
+    '<div class="manager-kpi"><span>平均含税金额</span><strong>' + managerMoney(average) + '</strong></div>' +
+    '<div class="manager-kpi' + (duplicateCount || issueCount ? ' alert' : '') + '"><span>重复 / 异常</span><strong>' + duplicateCount + ' / ' + issueCount + '</strong></div>';
+}
+
+function renderManagerDetails(records) {
+  var html = '<thead><tr><th>状态</th><th>开票日期</th><th>发票号码</th><th>销售方</th><th>购买方</th><th>类型</th><th class="number">含税金额</th><th class="number">税额</th><th class="center">页数</th><th>文件名</th><th class="center">操作</th></tr></thead><tbody>';
+  if (records.length === 0) return html + '<tr><td colspan="11" class="manager-empty">没有符合条件的发票</td></tr></tbody>';
+  records.slice().sort(function(a, b) { return invoiceDateKey(b.invoiceDate).localeCompare(invoiceDateKey(a.invoiceDate)); }).forEach(function(record) {
+    html += '<tr>' +
+      '<td>' + managerStatusHtml(record) + '</td>' +
+      '<td>' + escHtml(invoiceDateKey(record.invoiceDate) || '—') + '</td>' +
+      '<td title="' + escHtml(record.invoiceNo || '') + '">' + escHtml(record.invoiceNo || '—') + '</td>' +
+      '<td title="' + escHtml(record.sellerName || '') + '">' + escHtml(record.sellerName || '—') + '</td>' +
+      '<td title="' + escHtml(record.buyerName || '') + '">' + escHtml(record.buyerName || '—') + '</td>' +
+      '<td>' + escHtml(invoiceTypeLabel(record.invoiceType)) + '</td>' +
+      '<td class="number">' + managerMoney(record.amountTax || record.amount) + '</td>' +
+      '<td class="number">' + managerMoney(record.taxAmount) + '</td>' +
+      '<td class="center">' + record._pageCount + '</td>' +
+      '<td title="' + escHtml(record.name || '') + '">' + escHtml(record.name || '—') + '</td>' +
+      '<td class="center"><button class="manager-detail-btn" onclick="openInvoiceManagerRecord(' + record._managerIndex + ')" aria-label="查看发票详情">详情</button></td></tr>';
+  });
+  return html + '</tbody>';
+}
+
+function groupManagerRecords(records, keyFn) {
+  var groups = {};
+  records.forEach(function(record) {
+    var key = keyFn(record) || '未识别';
+    if (!groups[key]) groups[key] = { key: key, count: 0, amountTax: 0, amountNoTax: 0, taxAmount: 0, duplicates: 0, issues: 0 };
+    var group = groups[key];
+    group.count++;
+    group.amountTax += Number(record.amountTax || record.amount) || 0;
+    group.amountNoTax += Number(record.amountNoTax) || 0;
+    group.taxAmount += Number(record.taxAmount) || 0;
+    if (record._duplicateInvoice) group.duplicates++;
+    if (record._parseStatus !== 'ok') group.issues++;
+  });
+  return Object.keys(groups).map(function(key) { return groups[key]; });
+}
+
+function renderManagerGrouped(records, tab) {
+  var labels = { month: '月份', seller: '销售方', buyer: '购买方', taxRate: '税率/征收率' };
+  var keyFn = tab === 'month'
+    ? function(record) { var date = invoiceDateKey(record.invoiceDate); return date ? date.slice(0, 7) : '未识别'; }
+    : tab === 'seller'
+      ? function(record) { return record.sellerName || '未识别'; }
+      : tab === 'buyer'
+        ? function(record) { return record.buyerName || '未识别'; }
+        : function(record) { return record.taxRate || '未识别'; };
+  var groups = groupManagerRecords(records, keyFn);
+  groups.sort(tab === 'month'
+    ? function(a, b) { return b.key.localeCompare(a.key); }
+    : function(a, b) { return b.amountTax - a.amountTax; });
+  var html = '<thead><tr><th>' + labels[tab] + '</th><th class="number">发票数</th><th class="number">含税金额</th><th class="number">不含税金额</th><th class="number">税额</th><th class="number">重复</th><th class="number">异常</th></tr></thead><tbody>';
+  if (groups.length === 0) return html + '<tr><td colspan="7" class="manager-empty">没有可汇总的数据</td></tr></tbody>';
+  groups.forEach(function(group) {
+    html += '<tr><td title="' + escHtml(group.key) + '">' + escHtml(group.key) + '</td>' +
+      '<td class="number">' + group.count + '</td><td class="number">' + managerMoney(group.amountTax) + '</td>' +
+      '<td class="number">' + managerMoney(group.amountNoTax) + '</td><td class="number">' + managerMoney(group.taxAmount) + '</td>' +
+      '<td class="number">' + group.duplicates + '</td><td class="number">' + group.issues + '</td></tr>';
+  });
+  return html + '</tbody>';
+}
+
+function renderManagerItems(records) {
+  var groups = {};
+  records.forEach(function(record) {
+    (record.lineItems || []).forEach(function(item) {
+      var key = String(item.projectName || '未识别项目').trim() || '未识别项目';
+      if (!groups[key]) groups[key] = { key: key, invoices: {}, rows: 0, amountNoTax: 0, taxAmount: 0, amountTax: 0 };
+      var group = groups[key];
+      group.invoices[record._sourceKey] = true;
+      group.rows++;
+      group.amountNoTax += Number(item.amount) || 0;
+      group.taxAmount += Number(item.taxAmount) || 0;
+      group.amountTax += Number(item.amountTax) || ((Number(item.amount) || 0) + (Number(item.taxAmount) || 0));
+    });
+  });
+  var items = Object.keys(groups).map(function(key) { return groups[key]; }).sort(function(a, b) { return b.amountTax - a.amountTax; });
+  var html = '<thead><tr><th>项目名称</th><th class="number">涉及发票</th><th class="number">明细行</th><th class="number">含税金额</th><th class="number">不含税金额</th><th class="number">税额</th></tr></thead><tbody>';
+  if (items.length === 0) return html + '<tr><td colspan="6" class="manager-empty">筛选结果中没有商品明细</td></tr></tbody>';
+  items.forEach(function(item) {
+    html += '<tr><td title="' + escHtml(item.key) + '">' + escHtml(item.key) + '</td>' +
+      '<td class="number">' + Object.keys(item.invoices).length + '</td><td class="number">' + item.rows + '</td>' +
+      '<td class="number">' + managerMoney(item.amountTax) + '</td><td class="number">' + managerMoney(item.amountNoTax) + '</td>' +
+      '<td class="number">' + managerMoney(item.taxAmount) + '</td></tr>';
+  });
+  return html + '</tbody>';
+}
+
+function renderInvoiceManager() {
+  if (!_invoiceManagerRecords.length) return;
+  _invoiceManagerFiltered = getManagerFilteredRecords();
+  renderManagerKpis(_invoiceManagerFiltered);
+  var html = _invoiceManagerTab === 'details'
+    ? renderManagerDetails(_invoiceManagerFiltered)
+    : _invoiceManagerTab === 'item'
+      ? renderManagerItems(_invoiceManagerFiltered)
+      : renderManagerGrouped(_invoiceManagerFiltered, _invoiceManagerTab);
+  document.getElementById('managerTable').innerHTML = html;
+  document.getElementById('managerResultSummary').textContent =
+    '当前显示 ' + _invoiceManagerFiltered.length + ' / ' + _invoiceManagerRecords.length + ' 条发票记录';
+}
+
+function setInvoiceManagerTab(tab, button) {
+  _invoiceManagerTab = tab;
+  document.querySelectorAll('.manager-tab').forEach(function(tabButton) { tabButton.classList.remove('active'); });
+  if (button) button.classList.add('active');
+  renderInvoiceManager();
+}
+
+function openInvoiceManagerRecord(index) {
+  var record = _invoiceManagerRecords[index];
+  if (!record || !record._primaryFile) return;
+  var fileIndex = S.files.indexOf(record._primaryFile);
+  if (fileIndex < 0) return;
+  closeInvoiceManager();
+  openInvModal(fileIndex);
+}
+
+function openSummaryFromManager() {
+  closeInvoiceManager();
+  openSummaryModal();
+}
+
+// =====================================================
 // 发票汇总表 — 可编辑预览 + CSV 导出
 // =====================================================
 
@@ -3663,14 +4088,18 @@ function getSummaryCellValue(fileObj, field, idx) {
 
 // Sync edited value back to fileObj
 function setSummaryCellValue(fileObj, field, value) {
-  switch (field.key) {
-    case 'amountTax': fileObj.amountTax = parseFloat(value) || 0; break;
-    case 'amountNoTax': fileObj.amountNoTax = parseFloat(value) || 0; break;
-    case 'taxAmount': fileObj.taxAmount = parseFloat(value) || 0; break;
-    case 'copies': fileObj.copies = Math.max(1, parseInt(value) || 1); break;
-    case 'invoiceType': break; // doesn't sync back (derived field)
-    default: fileObj[field.key] = value; break;
-  }
+  var targets = fileObj._sourceFiles ? fileObj._sourceFiles.slice() : [fileObj];
+  if (targets.indexOf(fileObj) < 0) targets.push(fileObj);
+  targets.forEach(function(target) {
+    switch (field.key) {
+      case 'amountTax': target.amountTax = parseFloat(value) || 0; break;
+      case 'amountNoTax': target.amountNoTax = parseFloat(value) || 0; break;
+      case 'taxAmount': target.taxAmount = parseFloat(value) || 0; break;
+      case 'copies': target.copies = Math.max(1, parseInt(value) || 1); break;
+      case 'invoiceType': break; // doesn't sync back (derived field)
+      default: target[field.key] = value; break;
+    }
+  });
 }
 
 // Enter: next row same column / Shift+Enter: previous row same column
@@ -3753,7 +4182,7 @@ function renderSummaryTable() {
 
   // Update total below table
   var totalEl = document.getElementById('summaryTotal');
-  totalEl.textContent = '共 ' + files.length + ' 张发票';
+  totalEl.textContent = '共 ' + files.length + ' 份发票';
 }
 
 // Handle cell edit — sync back to fileObj + refresh all UI
@@ -4074,7 +4503,7 @@ function onRenameNoteInput(input) {
   var idx = parseInt(input.dataset.idx);
   var pv = _renamePreview[idx];
   if (!pv || !pv.fileObj) return;
-  pv.fileObj.note = input.value;
+  setSummaryCellValue(pv.fileObj, { key: 'note' }, input.value);
   _renameNoteDirty = true;
   clearTimeout(_renameNoteTimer);
   _renameNoteTimer = setTimeout(function() {
@@ -4140,11 +4569,23 @@ async function executeRename() {
         console.log('[rename]', p.oldName, '→', p.newName);
       }
 
-      // Success — update all references
+      // Success — update all page objects belonging to this source file.
       var oldName = p.fileObj.name;
       p.fileObj.name = p.newName;
+      var sourceFiles = p.fileObj._sourceFiles || [p.fileObj];
+      var pdfBaseName = p.newName.replace(/\.pdf$/i, '');
+      sourceFiles.forEach(function(fileObj) {
+        if (fileObj._pdfPath && sourceFiles.length > 1) {
+          fileObj.name = pdfBaseName + '_第' + ((fileObj._pdfPageIdx || 0) + 1) + '页.pdf';
+        } else {
+          fileObj.name = p.newName;
+        }
+      });
       if (!isBrowserMode) {
-        if (p.fileObj._filePath) p.fileObj._filePath = newPath;
+        sourceFiles.forEach(function(fileObj) {
+          if (fileObj._filePath === srcPath) fileObj._filePath = newPath;
+          if (fileObj._pdfPath === srcPath) fileObj._pdfPath = newPath;
+        });
         // Sync _pdfPath for all pages sharing the same source (multi-page PDF)
         var oldPdf = srcPath;
         S.files.forEach(function(f) {

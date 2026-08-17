@@ -68,6 +68,7 @@
       <div class="sidebar-panel-footer">
         <div class="file-summary" id="amountSummary" style="display:none">
           <span id="amountSummaryText"></span>
+          <button class="manager-entry-btn" id="invoiceManagerBtn" onclick="openInvoiceManager()" title="查询与统计发票" disabled>管理</button>
           <button class="ib" id="summaryBtn" onclick="openSummaryModal()" title="导出汇总表" disabled>📊</button>
         </div>
       </div>
@@ -436,6 +437,49 @@
       <button class="btn" onclick="closeSummaryModal()">取消</button>
       <button class="btn" id="summaryRenameBtn" onclick="toggleSummaryRename()">🔄 重命名文件</button>
       <button class="btn btn-primary" onclick="exportSummaryCsv()">📥 导出 CSV</button>
+    </div>
+  </div>
+</div>
+
+<!-- Invoice management modal -->
+<div class="modal-bg hidden" id="invoiceManagerModal" onclick="closeInvoiceManager()">
+  <div class="modal invoice-manager-modal" onclick="event.stopPropagation()">
+    <div class="manager-title-row">
+      <div class="modal-title">发票管理</div>
+      <div class="manager-dataset-summary" id="managerDatasetSummary"></div>
+    </div>
+    <div class="modal-body manager-body">
+      <div class="manager-filters" aria-label="发票筛选条件">
+        <label class="manager-filter manager-filter-search"><span>关键词</span><input id="managerKeyword" type="search" placeholder="发票号、主体、文件名、项目" oninput="renderInvoiceManager()"></label>
+        <label class="manager-filter"><span>开始日期</span><input id="managerDateFrom" type="date" onchange="renderInvoiceManager()"></label>
+        <label class="manager-filter"><span>结束日期</span><input id="managerDateTo" type="date" onchange="renderInvoiceManager()"></label>
+        <label class="manager-filter"><span>购买方</span><select id="managerBuyer" onchange="renderInvoiceManager()"><option value="">全部购买方</option></select></label>
+        <label class="manager-filter"><span>销售方</span><select id="managerSeller" onchange="renderInvoiceManager()"><option value="">全部销售方</option></select></label>
+        <label class="manager-filter"><span>最低含税金额</span><input id="managerAmountMin" type="number" min="0" step="0.01" placeholder="0.00" oninput="renderInvoiceManager()"></label>
+        <label class="manager-filter"><span>最高含税金额</span><input id="managerAmountMax" type="number" min="0" step="0.01" placeholder="不限" oninput="renderInvoiceManager()"></label>
+        <label class="manager-filter"><span>发票类型</span><select id="managerType" onchange="renderInvoiceManager()"><option value="">全部类型</option></select></label>
+        <label class="manager-filter"><span>数据状态</span><select id="managerStatus" onchange="renderInvoiceManager()"><option value="">全部状态</option><option value="duplicate">重复发票</option><option value="error">解析异常</option><option value="review">需复核</option><option value="ok">正常</option></select></label>
+        <button class="btn manager-clear-btn" onclick="clearInvoiceManagerFilters()">清除筛选</button>
+      </div>
+
+      <div class="manager-kpis" id="managerKpis"></div>
+
+      <div class="manager-tabs" role="tablist" aria-label="统计维度">
+        <button class="manager-tab active" data-tab="details" onclick="setInvoiceManagerTab('details',this)">发票明细</button>
+        <button class="manager-tab" data-tab="month" onclick="setInvoiceManagerTab('month',this)">月度汇总</button>
+        <button class="manager-tab" data-tab="seller" onclick="setInvoiceManagerTab('seller',this)">销售方</button>
+        <button class="manager-tab" data-tab="buyer" onclick="setInvoiceManagerTab('buyer',this)">购买方</button>
+        <button class="manager-tab" data-tab="taxRate" onclick="setInvoiceManagerTab('taxRate',this)">税率</button>
+        <button class="manager-tab" data-tab="item" onclick="setInvoiceManagerTab('item',this)">项目明细</button>
+      </div>
+      <div class="manager-table-wrap">
+        <table class="manager-table" id="managerTable"></table>
+      </div>
+      <div class="manager-result-summary" id="managerResultSummary" role="status"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeInvoiceManager()">关闭</button>
+      <button class="btn btn-primary" onclick="openSummaryFromManager()">打开汇总表</button>
     </div>
   </div>
 </div>

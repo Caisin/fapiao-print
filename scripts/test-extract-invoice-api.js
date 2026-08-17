@@ -197,7 +197,49 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
   assert.match(appSource, /f\.type === 'ofd'/);
   assert.match(printSource, /spec\.crop = fileObj\.trimCrop/);
 
-  process.stdout.write('invoice extraction API, directory UI, and compact PDF layout tests passed\n');
+  const recordsStart = appSource.indexOf('function normalizeInvoiceNo');
+  const recordsEnd = appSource.indexOf('function renderFileList', recordsStart);
+  assert.ok(recordsStart >= 0 && recordsEnd > recordsStart, 'invoice record aggregation block must exist');
+  const recordsContext = {};
+  vm.createContext(recordsContext);
+  vm.runInContext(appSource.slice(recordsStart, recordsEnd), recordsContext);
+  const page1 = {
+    id: 'a1', name: 'a_第1页.pdf', _pdfPath: '/tmp/a.pdf', invoiceNo: '123456', invoiceDate: '2026-08-01',
+    sellerName: '销售方A', buyerName: '购买方', amountTax: 100, amountNoTax: 94.34, taxAmount: 5.66,
+    lineItems: [
+      { projectName: '服务费', amount: 47.17, taxAmount: 2.83 },
+      { projectName: '服务费', amount: 47.17, taxAmount: 2.83 }
+    ], _extractionSuccess: true, _extractionWarnings: []
+  };
+  const page2 = {
+    id: 'a2', name: 'a_第2页.pdf', _pdfPath: '/tmp/a.pdf', invoiceNo: '', amountTax: 0,
+    lineItems: [{ projectName: '补充明细', amount: 10 }], _extractionSuccess: true, _extractionWarnings: []
+  };
+  const duplicate = {
+    id: 'b1', name: 'b.pdf', _pdfPath: '/tmp/b.pdf', invoiceNo: '123456', invoiceDate: '2026-08-02',
+    sellerName: '销售方B', amountTax: 50, lineItems: [], _extractionSuccess: true, _extractionWarnings: []
+  };
+  const failed = {
+    id: 'c1', name: 'c.pdf', _pdfPath: '/tmp/c.pdf', invoiceNo: '', amountTax: 0,
+    lineItems: [], _extractionSuccess: false, _extractionWarnings: ['解析失败']
+  };
+  const records = recordsContext.getInvoiceRecords([page1, page2, duplicate, failed]);
+  assert.equal(records.length, 3, 'two pages from one PDF must count as one invoice record');
+  const mergedPdf = records.find((record) => record._sourcePath === '/tmp/a.pdf');
+  assert.equal(mergedPdf._pageCount, 2);
+  assert.equal(mergedPdf.lineItems.length, 3, 'legitimate duplicate rows within one page must be preserved');
+  assert.equal(records.filter((record) => record._duplicateInvoice).length, 2, 'same invoice number in different files must be marked duplicate');
+  assert.equal(records.find((record) => record._sourcePath === '/tmp/c.pdf')._parseStatus, 'error');
+  recordsContext.getInvoiceRecords([page1, page2], false);
+  assert.equal(page1._duplicateInvoice, true, 'filtered summaries must not clear global duplicate flags');
+  assert.match(indexSource, /id="invoiceManagerModal"/);
+  assert.match(indexSource, /data-tab="month"/);
+  assert.match(indexSource, /data-tab="seller"/);
+  assert.match(indexSource, /data-tab="buyer"/);
+  assert.match(indexSource, /data-tab="taxRate"/);
+  assert.match(indexSource, /data-tab="item"/);
+
+  process.stdout.write('invoice extraction API, management aggregation, and compact PDF layout tests passed\n');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
