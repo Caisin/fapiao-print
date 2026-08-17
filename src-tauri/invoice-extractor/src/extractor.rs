@@ -165,6 +165,9 @@ impl<B: OcrBackend> InvoiceExtractor<B> {
                     page_index + 1
                 ));
             }
+            if info.invoice_no.is_empty() {
+                info.invoice_no = invoice_number_from_file_name(path).unwrap_or_default();
+            }
             invoices.push(info);
         }
         Ok(invoices)
@@ -189,6 +192,23 @@ impl<B: OcrBackend> InvoiceExtractor<B> {
             options.include_raw_text,
         ))
     }
+}
+
+fn invoice_number_from_file_name(path: &Path) -> Option<String> {
+    let file_stem = path.file_stem()?.to_str()?;
+    let mut digits = String::new();
+    let mut candidates = Vec::new();
+    for character in file_stem.chars().chain(std::iter::once('_')) {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else {
+            if (8..=20).contains(&digits.len()) {
+                candidates.push(std::mem::take(&mut digits));
+            }
+            digits.clear();
+        }
+    }
+    candidates.into_iter().max_by_key(String::len)
 }
 
 fn collect_invoice_paths(
@@ -299,6 +319,32 @@ mod tests {
         });
 
         assert_eq!(incomplete.invoice_type, "vat-general");
+    }
+
+    #[test]
+    fn merge_keeps_pdf_and_ocr_raw_text() {
+        let mut incomplete = InvoiceInfo {
+            raw_text: Some("PDF template".to_string()),
+            ..Default::default()
+        };
+        incomplete.merge_missing(InvoiceInfo {
+            raw_text: Some("OCR values".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            incomplete.raw_text.as_deref(),
+            Some("PDF template\nOCR values")
+        );
+    }
+
+    #[test]
+    fn file_name_fallback_prefers_longest_invoice_number() {
+        let path = Path::new("餐饮_20260817_26437000000232262330.pdf");
+        assert_eq!(
+            invoice_number_from_file_name(path).as_deref(),
+            Some("26437000000232262330")
+        );
     }
 
     #[test]

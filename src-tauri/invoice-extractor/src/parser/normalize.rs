@@ -41,6 +41,19 @@ pub(crate) fn clean_name(input: &str) -> String {
             value.truncate(index);
         }
     }
+    for suffix in ["有限责任公司", "股份有限公司", "有限公司"] {
+        let Some(index) = value.find(suffix) else {
+            continue;
+        };
+        let end = index + suffix.len();
+        let tail = &value[end..];
+        if ["信用", "代码", "识别", "纳税"]
+            .iter()
+            .any(|label| tail.contains(label))
+        {
+            value.truncate(end);
+        }
+    }
     value = value
         .trim_matches(|ch: char| ch.is_whitespace() || ":：,，。.、;；".contains(ch))
         .to_string();

@@ -1,6 +1,7 @@
 # invoice-extractor
 
-平台无关的发票文件信息提取库。crate 不依赖 Tauri，也不包含 Windows 或 macOS API。
+跨平台发票文件信息提取库。核心解析不依赖 Tauri；可选的 macOS 原生 PDF
+renderer 单独隔离在 `native_pdf.rs`，其他平台仍可通过公共 trait 注入实现。
 
 ## 模块
 
@@ -10,10 +11,14 @@
 - `extractor.rs`: 文件类型分发和多页结果合并
 - `backend.rs`: OCR 后端接口
 - `paddle.rs`: 可选 PP-OCRv5/MNN 后端和 PDF 页面渲染接口
+- `native_pdf.rs`: 可选 macOS Core Graphics PDF 页面渲染器
 
 ## 使用
 
 ### PDF 文字层、OFD、XML
+
+PDF 解析会递归展开页面调用的 Form XObject，并使用每个 Form 自带的字体资源
+读取 WPS/Adobe 中可编辑的实际字段文字。文字层已包含核心字段时不会启动 OCR。
 
 ```rust
 let result = invoice_extractor::extract_file("invoice.xml")?;
@@ -77,9 +82,14 @@ cargo run \
 启用 `paddle-ocr` feature 后，可直接使用仓库现有 PP-OCRv5 模型：
 
 ```rust
-use invoice_extractor::{ExtractionOptions, InvoiceExtractor, PaddleOcrBackend};
+use invoice_extractor::{
+    ExtractionOptions, InvoiceExtractor, NativePdfRenderer, PaddleOcrBackend,
+};
 
-let backend = PaddleOcrBackend::from_model_dir("src-tauri/models")?;
+let backend = PaddleOcrBackend::with_renderer(
+    "src-tauri/models",
+    NativePdfRenderer,
+)?;
 let result = invoice_extractor::InvoiceExtractor::new(backend)
     .extract_file("invoice.jpg", ExtractionOptions::default())?;
 ```
@@ -104,12 +114,14 @@ cargo run \
 - `PP-OCRv5_mobile_rec.mnn`
 - `ppocr_keys_v5.txt`
 
-宿主仅需为扫描 PDF 实现 `PdfPageRenderer`。普通图片由 `PaddleOcrBackend`
-直接读取，字段识别和结果结构不依赖操作系统。
+`NativePdfRenderer` 在 macOS 上通过系统 Core Graphics 渲染 PDF，无需安装
+PDFium 或其他运行库；普通图片仍由 `PaddleOcrBackend` 直接读取。其他平台若
+需要独立解析扫描 PDF，可按下节注入宿主渲染器。
 
 ### 扫描 PDF
 
-扫描 PDF 需要宿主提供页面渲染器，OCR 和字段解析仍由 crate 完成：
+macOS 可直接使用上面的 `NativePdfRenderer`。其他平台的扫描 PDF 需要宿主提供
+页面渲染器，OCR 和字段解析仍由 crate 完成：
 
 ```rust
 use image::DynamicImage;

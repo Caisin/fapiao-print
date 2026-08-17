@@ -1,4 +1,4 @@
-use invoice_extractor::{ExtractionOptions, InvoiceExtractor, PaddleOcrBackend};
+use invoice_extractor::{ExtractionOptions, InvoiceExtractor, NativePdfRenderer, PaddleOcrBackend};
 
 fn main() -> Result<(), String> {
     let mut arguments = std::env::args().skip(1);
@@ -10,8 +10,9 @@ fn main() -> Result<(), String> {
         .unwrap_or_else(|| "src-tauri/models".to_string());
     let precision = arguments.next().unwrap_or_else(|| "standard".to_string());
 
-    // No PDF renderer is needed for JPG/PNG/BMP/WebP/TIFF invoice images.
-    let backend = PaddleOcrBackend::from_model_dir(model_dir)?;
+    // NativePdfRenderer uses Core Graphics on macOS. Other platforms can
+    // inject their renderer through PaddleOcrBackend::with_renderer.
+    let backend = PaddleOcrBackend::with_renderer(model_dir, NativePdfRenderer)?;
     let extractor = InvoiceExtractor::new(backend);
     let options = ExtractionOptions {
         use_ocr: true,

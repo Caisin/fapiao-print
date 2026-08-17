@@ -152,8 +152,16 @@ impl InvoiceInfo {
         if self.amount_validation.is_none() {
             self.amount_validation = other.amount_validation;
         }
-        if self.raw_text.as_ref().map_or(true, String::is_empty) {
-            self.raw_text = other.raw_text;
+        if let Some(other_text) = other.raw_text.filter(|text| !text.trim().is_empty()) {
+            match self.raw_text.as_mut() {
+                Some(current) if !current.trim().is_empty() => {
+                    if current.trim() != other_text.trim() {
+                        current.push('\n');
+                        current.push_str(&other_text);
+                    }
+                }
+                _ => self.raw_text = Some(other_text),
+            }
         }
     }
 }

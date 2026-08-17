@@ -41,7 +41,7 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
 
     if is_non_tax {
         result.amount_no_tax = result.amount_tax;
-        result.tax_rate = extract_tax_rate(&compact_text, &result, is_ticket, is_non_tax);
+        result.tax_rate = extract_tax_rate(text, &result, is_ticket, is_non_tax);
         return result;
     }
 
@@ -72,7 +72,7 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
     if result.amount_tax > 0.0 && result.amount_no_tax <= 0.0 && result.tax_amount <= 0.0 {
         result.amount_no_tax = result.amount_tax;
     }
-    result.tax_rate = extract_tax_rate(&compact_text, &result, is_ticket, is_non_tax);
+    result.tax_rate = extract_tax_rate(text, &result, is_ticket, is_non_tax);
     result
 }
 

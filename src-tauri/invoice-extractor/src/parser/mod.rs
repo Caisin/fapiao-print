@@ -222,6 +222,43 @@ mod tests {
     }
 
     #[test]
+    fn maps_form_values_to_buyer_and_seller_by_horizontal_position() {
+        let values = [
+            ("长沙京东厚成贸易有限公司", 350.0),
+            ("长沙万漫网络科技有限公司", 50.0),
+            ("91430112MA4PQ4A2XY", 350.0),
+            ("91430104MA4T8FT50U", 50.0),
+        ];
+        let page = RecognitionPage {
+            text: values
+                .iter()
+                .map(|(value, _)| *value)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            lines: values
+                .into_iter()
+                .map(|(value, x)| crate::RecognitionLine {
+                    words: vec![crate::RecognitionWord {
+                        text: value.to_string(),
+                        x,
+                        ..Default::default()
+                    }],
+                    confidence: 1.0,
+                })
+                .collect(),
+            img_w: 600,
+            img_h: 800,
+        };
+
+        let info = parse_recognition_page(&page, 0, "pdf-text", false);
+
+        assert_eq!(info.buyer_name, "长沙万漫网络科技有限公司");
+        assert_eq!(info.buyer_credit_code, "91430104MA4T8FT50U");
+        assert_eq!(info.seller_name, "长沙京东厚成贸易有限公司");
+        assert_eq!(info.seller_credit_code, "91430112MA4PQ4A2XY");
+    }
+
+    #[test]
     fn derives_tax_rate_when_text_does_not_include_it() {
         let page = RecognitionPage::from_text(
             "电子发票（普通发票）\n合计 ¥100.00 ¥13.00\n价税合计（小写）¥113.00",

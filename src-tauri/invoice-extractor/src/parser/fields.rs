@@ -54,6 +54,7 @@ pub(crate) fn extract_identity(text: &str, page: &RecognitionPage) -> IdentityFi
         is_non_tax,
     };
 
+    fill_names_from_coordinates(&mut result, page);
     fill_unqualified_names(&mut result, text);
     fill_from_coordinates(&mut result, page);
     fill_credit_codes(&mut result, &compact_text, page);
@@ -62,6 +63,44 @@ pub(crate) fn extract_identity(text: &str, page: &RecognitionPage) -> IdentityFi
         result.invoice_no = find_likely_invoice_number(text, &result);
     }
     result
+}
+
+fn fill_names_from_coordinates(result: &mut IdentityFields, page: &RecognitionPage) {
+    if page.img_w == 0 {
+        return;
+    }
+    let middle = page.img_w as f64 * 0.5;
+    for word in page.lines.iter().flat_map(|line| &line.words) {
+        let line = compact(&word.text);
+        let name = name_value(&line)
+            .map(clean_name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| clean_name(&line));
+        if name.is_empty() {
+            continue;
+        }
+        if name_value(&line).is_none() && !looks_like_company_name(&name) {
+            continue;
+        }
+        if word.x < middle {
+            result.buyer_name = name;
+        } else {
+            result.seller_name = name;
+        }
+    }
+}
+
+fn name_value(line: &str) -> Option<&str> {
+    if let Some(label_index) = line.find("名称") {
+        return Some(line[label_index + "名称".len()..].trim_start_matches([':', '：']));
+    }
+    if line.starts_with('名') {
+        return line
+            .char_indices()
+            .find(|(_, character)| matches!(character, ':' | '：'))
+            .map(|(separator, character)| &line[separator + character.len_utf8()..]);
+    }
+    None
 }
 
 fn detect_invoice_type(text: &str, is_ticket: bool, is_non_tax: bool) -> String {
@@ -194,11 +233,8 @@ fn fill_unqualified_names(result: &mut IdentityFields, text: &str) {
     let names = text
         .lines()
         .map(compact)
-        .filter_map(|line| {
-            line.strip_prefix("名称:")
-                .map(clean_name)
-                .filter(|name| !name.is_empty())
-        })
+        .filter_map(|line| name_value(&line).map(clean_name))
+        .filter(|name| !name.is_empty())
         .collect::<Vec<_>>();
     if clean_name(&result.buyer_name).is_empty() {
         result.buyer_name = names.first().cloned().unwrap_or_default();
@@ -251,6 +287,29 @@ fn fill_credit_codes(result: &mut IdentityFields, text: &str, page: &Recognition
         Ok(regex) => regex,
         Err(_) => return,
     };
+    if page.img_w > 0 {
+        let middle = page.img_w as f64 * 0.5;
+        for word in page.lines.iter().flat_map(|line| &line.words) {
+            let normalized = normalize_credit_code(&word.text);
+            let Some(code) = regex
+                .captures(&normalized)
+                .and_then(|captures| captures.get(1))
+                .map(|value| value.as_str().to_string())
+            else {
+                continue;
+            };
+            if code == result.invoice_no
+                || (code.chars().all(|character| character.is_ascii_digit()) && code.len() != 18)
+            {
+                continue;
+            }
+            if word.x < middle {
+                result.buyer_credit_code = code;
+            } else {
+                result.seller_credit_code = code;
+            }
+        }
+    }
     let mut candidates = regex
         .captures_iter(text)
         .filter_map(|captures| {
