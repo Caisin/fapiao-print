@@ -3,6 +3,7 @@ mod fields;
 mod normalize;
 
 use crate::{AmountValidation, InvoiceInfo, RecognitionPage};
+pub(crate) use amounts::normalize_tax_rate;
 
 pub(crate) fn parse_recognition_page(
     page: &RecognitionPage,
@@ -56,6 +57,7 @@ pub(crate) fn parse_recognition_page(
         amount_tax: amounts.amount_tax,
         amount_no_tax: amounts.amount_no_tax,
         tax_amount: amounts.tax_amount,
+        tax_rate: amounts.tax_rate,
         is_ticket: identity.is_ticket,
         is_non_tax: identity.is_non_tax,
         amount_validation: validation,
@@ -124,7 +126,7 @@ mod tests {
             "电子发票（普通发票）\n发票号码：25322000000337005189\n开票日期：2025年07月22日\n\
              购买方名称：江苏测试科技有限公司\n统一社会信用代码：9132020013590404XW\n\
              销售方名称：无锡示例商贸有限公司\n统一社会信用代码：91320200796148368W\n\
-             合计 ¥100.00 ¥13.00\n价税合计（小写）¥113.00",
+             合计 ¥100.00 ¥13.00\n税率 13%\n价税合计（小写）¥113.00",
         );
         let info = parse_recognition_page(&page, 0, "pdf-text", true);
         assert_eq!(info.invoice_no, "25322000000337005189");
@@ -134,6 +136,7 @@ mod tests {
         assert_eq!(info.amount_tax, 113.0);
         assert_eq!(info.amount_no_tax, 100.0);
         assert_eq!(info.tax_amount, 13.0);
+        assert_eq!(info.tax_rate, "13%");
         assert!(info.amount_validation.is_none());
     }
 
@@ -159,7 +162,7 @@ mod tests {
              名称：\n名称：\n26432000001910446111\n2026年08月16日\n\
              长沙百寻网络科技有限公司\n91430104MACJBWXN1K\n\
              植觉素茶餐（长沙）有限公司\n91430104MAD21GYF0P\n\
-             合计 ¥335.64 ¥3.36\n价税合计（小写）¥339.00",
+             合计 ¥335.64 ¥3.36\n税率\n1%\n价税合计（小写）¥339.00",
         );
 
         let info = parse_recognition_page(&page, 0, "pdf-text", false);
@@ -169,5 +172,28 @@ mod tests {
         assert_eq!(info.buyer_credit_code, "91430104MACJBWXN1K");
         assert_eq!(info.seller_name, "植觉素茶餐（长沙）有限公司");
         assert_eq!(info.seller_credit_code, "91430104MAD21GYF0P");
+        assert_eq!(info.tax_rate, "1%");
+    }
+
+    #[test]
+    fn derives_tax_rate_when_text_does_not_include_it() {
+        let page = RecognitionPage::from_text(
+            "电子发票（普通发票）\n合计 ¥100.00 ¥13.00\n价税合计（小写）¥113.00",
+        );
+
+        let info = parse_recognition_page(&page, 0, "pdf-text", false);
+
+        assert_eq!(info.tax_rate, "13%");
+    }
+
+    #[test]
+    fn preserves_multiple_tax_rates_in_document_order() {
+        let page = RecognitionPage::from_text(
+            "电子发票（普通发票）\n项目一 13%\n项目二 免税\n项目三 1%\n价税合计（小写）¥113.00",
+        );
+
+        let info = parse_recognition_page(&page, 0, "pdf-text", false);
+
+        assert_eq!(info.tax_rate, "13%,免税,1%");
     }
 }

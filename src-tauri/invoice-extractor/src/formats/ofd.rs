@@ -113,6 +113,10 @@ fn parse_custom_data(xml: &str) -> Result<crate::InvoiceInfo, String> {
         buyer_credit_code: take_alias(&values, &["购买方纳税人识别号", "BuyerTaxID"]),
         seller_name: take_alias(&values, &["销售方名称", "SellerName"]),
         seller_credit_code: take_alias(&values, &["销售方纳税人识别号", "SellerTaxID"]),
+        tax_rate: crate::parser::normalize_tax_rate(&take_alias(
+            &values,
+            &["税率", "TaxRate", "TaxRateValue"],
+        )),
         amount_no_tax: parse_alias_number(&values, &["合计金额", "TaxExclusiveTotalAmount"]),
         tax_amount: parse_alias_number(&values, &["合计税额", "TaxTotalAmount"]),
         amount_tax: parse_alias_number(&values, &["价税合计", "TaxInclusiveTotalAmount", "Amount"]),
@@ -171,6 +175,8 @@ fn collect_tag_refs(xml: &str, output: &mut HashMap<String, Vec<u32>>) -> Result
         "TaxTotalAmount",
         "TaxInclusiveTotalAmount",
         "Amount",
+        "TaxRate",
+        "TaxRateValue",
     ];
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -225,6 +231,12 @@ fn merge_tagged_fields(
             .cloned()
             .unwrap_or_default()
     };
+    let tax_rate = get("TaxRate");
+    let tax_rate = if tax_rate.is_empty() {
+        get("TaxRateValue")
+    } else {
+        tax_rate
+    };
     let tagged = crate::InvoiceInfo {
         invoice_no: get("InvoiceNo"),
         invoice_date: get("IssueDate"),
@@ -232,6 +244,7 @@ fn merge_tagged_fields(
         buyer_credit_code: get("BuyerTaxID"),
         seller_name: get("SellerName"),
         seller_credit_code: get("SellerTaxID"),
+        tax_rate: crate::parser::normalize_tax_rate(&tax_rate),
         amount_no_tax: parse_number(&get("TaxExclusiveTotalAmount")),
         tax_amount: parse_number(&get("TaxTotalAmount")),
         amount_tax: parse_number(&get("TaxInclusiveTotalAmount")).max(parse_number(&get("Amount"))),
@@ -308,12 +321,14 @@ mod tests {
           <ofd:CustomData Name="销售方名称">无锡示例商贸有限公司</ofd:CustomData>
           <ofd:CustomData Name="合计金额">100.00</ofd:CustomData>
           <ofd:CustomData Name="合计税额">13.00</ofd:CustomData>
+          <ofd:CustomData Name="税率">13%</ofd:CustomData>
         </ofd:OFD>"#;
         let info = parse_custom_data(xml).unwrap();
         assert_eq!(info.invoice_no, "25322000000337005189");
         assert_eq!(info.buyer_name, "江苏测试科技有限公司");
         assert_eq!(info.seller_name, "无锡示例商贸有限公司");
         assert_eq!(info.amount_tax, 113.0);
+        assert_eq!(info.tax_rate, "13%");
     }
 
     #[test]

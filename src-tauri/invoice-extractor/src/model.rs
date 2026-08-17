@@ -91,6 +91,7 @@ pub struct InvoiceInfo {
     pub amount_tax: f64,
     pub amount_no_tax: f64,
     pub tax_amount: f64,
+    pub tax_rate: String,
     pub is_ticket: bool,
     pub is_non_tax: bool,
     pub amount_validation: Option<AmountValidation>,
@@ -127,6 +128,7 @@ impl InvoiceInfo {
         fill_string!(buyer_credit_code);
         fill_string!(seller_name);
         fill_string!(seller_credit_code);
+        fill_string!(tax_rate);
         if self.amount_tax <= 0.0 {
             self.amount_tax = other.amount_tax;
         }

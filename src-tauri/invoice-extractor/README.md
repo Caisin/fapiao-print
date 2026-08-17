@@ -23,8 +23,12 @@ for invoice in &result.invoices {
     println!("票号: {}", invoice.invoice_no);
     println!("销售方: {}", invoice.seller_name);
     println!("含税金额: {}", invoice.amount_tax);
+    println!("税率: {}", invoice.tax_rate);
 }
 ```
+
+`tax_rate` 保留百分号或税务语义（如 `13%`、`免税`、`不征税`）；多税率
+发票按票面出现顺序使用英文逗号连接。
 
 可直接运行仓库示例：
 

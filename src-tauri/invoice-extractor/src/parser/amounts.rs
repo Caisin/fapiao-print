@@ -7,6 +7,7 @@ pub(crate) struct Amounts {
     pub amount_tax: f64,
     pub amount_no_tax: f64,
     pub tax_amount: f64,
+    pub tax_rate: String,
 }
 
 pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> Amounts {
@@ -38,6 +39,7 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
 
     if is_non_tax {
         result.amount_no_tax = result.amount_tax;
+        result.tax_rate = extract_tax_rate(&compact_text, &result, is_ticket, is_non_tax);
         return result;
     }
 
@@ -68,7 +70,106 @@ pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> 
     if result.amount_tax > 0.0 && result.amount_no_tax <= 0.0 && result.tax_amount <= 0.0 {
         result.amount_no_tax = result.amount_tax;
     }
+    result.tax_rate = extract_tax_rate(&compact_text, &result, is_ticket, is_non_tax);
     result
+}
+
+fn extract_tax_rate(text: &str, amounts: &Amounts, is_ticket: bool, is_non_tax: bool) -> String {
+    let mut candidates = Vec::<(usize, String)>::new();
+    if let Ok(regex) = Regex::new(r"([0-9]{1,3}(?:\.[0-9]{1,4})?)%") {
+        for captures in regex.captures_iter(text) {
+            if let (Some(full), Some(value)) = (captures.get(0), captures.get(1)) {
+                if let Ok(percent) = value.as_str().parse::<f64>() {
+                    if percent <= 100.0 {
+                        candidates.push((full.start(), format_percent(percent)));
+                    }
+                }
+            }
+        }
+    }
+    for label in ["不征税", "免税", "零税率"] {
+        for (position, _) in text.match_indices(label) {
+            candidates.push((position, label.to_string()));
+        }
+    }
+    candidates.sort_by_key(|(position, _)| *position);
+    let mut rates = Vec::new();
+    for (_, rate) in candidates {
+        push_unique(&mut rates, rate);
+    }
+    if rates.is_empty()
+        && !is_ticket
+        && !is_non_tax
+        && amounts.amount_no_tax > 0.0
+        && amounts.tax_amount >= 0.0
+    {
+        let percent = amounts.tax_amount / amounts.amount_no_tax * 100.0;
+        if percent <= 100.0 {
+            push_unique(&mut rates, format_derived_percent(percent));
+        }
+    }
+    rates.join(",")
+}
+
+pub(crate) fn normalize_tax_rate(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+    if ["不征税", "免税", "零税率"]
+        .iter()
+        .any(|label| value.contains(label))
+    {
+        return ["不征税", "免税", "零税率"]
+            .iter()
+            .find(|label| value.contains(**label))
+            .unwrap()
+            .to_string();
+    }
+    let numeric = value.trim_end_matches('%').replace(',', "").parse::<f64>();
+    let Ok(mut percent) = numeric else {
+        return String::new();
+    };
+    if !value.ends_with('%') && percent > 0.0 && percent < 1.0 {
+        percent *= 100.0;
+    }
+    if !(0.0..=100.0).contains(&percent) {
+        return String::new();
+    }
+    format_percent(percent)
+}
+
+fn format_percent(percent: f64) -> String {
+    let rounded = (percent * 10_000.0).round() / 10_000.0;
+    if (rounded - rounded.round()).abs() < 0.000_001 {
+        format!("{:.0}%", rounded)
+    } else {
+        let mut value = format!("{rounded:.4}");
+        while value.ends_with('0') {
+            value.pop();
+        }
+        format!("{value}%")
+    }
+}
+
+fn format_derived_percent(percent: f64) -> String {
+    let standard_rates = [0.0, 1.0, 3.0, 5.0, 6.0, 9.0, 13.0];
+    let closest = standard_rates
+        .iter()
+        .min_by(|left, right| (*left - percent).abs().total_cmp(&(*right - percent).abs()))
+        .copied()
+        .unwrap_or(percent);
+    if (closest - percent).abs() <= 0.5 {
+        format_percent(closest)
+    } else {
+        format_percent(percent)
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 fn first_amount_after(text: &str, labels: &[&str]) -> f64 {

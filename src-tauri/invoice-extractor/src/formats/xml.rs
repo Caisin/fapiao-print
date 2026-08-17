@@ -58,6 +58,12 @@ pub(crate) fn parse_xml_content(
                     "TotalTaxAm" | "TaxTotalAmount" | "TaxAmount" => {
                         info.tax_amount = parse_number(&value);
                     }
+                    "TaxRate" | "TaxRateValue" | "TaxRatePercent" => {
+                        let rate = crate::parser::normalize_tax_rate(&value);
+                        if info.tax_rate.is_empty() {
+                            info.tax_rate = rate;
+                        }
+                    }
                     "TotalTax-includedAmount"
                     | "TotalTaxIncludedAmount"
                     | "TaxInclusiveTotalAmount"
@@ -108,4 +114,21 @@ fn local_name(name: &[u8]) -> String {
 
 fn parse_number(value: &str) -> f64 {
     value.replace(',', "").trim().parse().unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_decimal_tax_rate_as_percent() {
+        let parsed = parse_xml_content(
+            "<EInvoice><TaxRate>0.13</TaxRate><TotalAmWithoutTax>100</TotalAmWithoutTax>\
+             <TotalTaxAm>13</TotalTaxAm><TotalTax-includedAmount>113</TotalTax-includedAmount></EInvoice>",
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.info.tax_rate, "13%");
+    }
 }
