@@ -39,6 +39,10 @@ for invoice in &result.invoices {
 
 `amount_uppercase` 保留票面中文大写金额，`invoice_clerk` 返回开票人姓名。
 
+`amount_validation` 仅在金额关系异常且无法自动修复时返回原始金额快照；正常满足
+`amount_tax = amount_no_tax + tax_amount`、无需校验的票种或已自动修复时均为
+`null`。因此 `null` 表示“没有未解决的金额异常”，不是“未执行解析”。
+
 可直接运行仓库示例：
 
 ```bash

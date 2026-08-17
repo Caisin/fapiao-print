@@ -183,22 +183,29 @@ fn capture_code(text: &str, labels: &[&str]) -> String {
 }
 
 fn extract_invoice_clerk(text: &str) -> String {
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let compact_line = compact(line);
-        for label in ["开票人:", "开票员:", "InvoiceClerk:", "Drawer:", "Issuer:"] {
-            if let Some(value) = compact_line.strip_prefix(label) {
+    let lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(compact)
+        .collect::<Vec<_>>();
+    for (index, line) in lines.iter().enumerate() {
+        for label in ["开票人", "开票员", "InvoiceClerk", "Drawer", "Issuer"] {
+            if let Some(value) = line.strip_prefix(label) {
+                let value = value.trim_start_matches([':', '：']);
                 if is_person_name(value) {
                     return value.to_string();
+                }
+                if value.is_empty() {
+                    if let Some(value) = lines.get(index + 1).filter(|value| is_person_name(value))
+                    {
+                        return value.clone();
+                    }
                 }
             }
         }
     }
 
-    let lines = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
     let Some(total_index) = lines.iter().position(|line| {
         line.chars()
             .filter(|ch| is_financial_character(*ch))
@@ -212,8 +219,8 @@ fn extract_invoice_clerk(text: &str) -> String {
         .iter()
         .skip(total_index + 1)
         .take(8)
-        .map(|line| compact(line))
         .find(|line| is_person_name(line))
+        .cloned()
         .unwrap_or_default()
 }
 

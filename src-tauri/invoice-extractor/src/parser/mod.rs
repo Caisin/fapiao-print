@@ -146,6 +146,18 @@ mod tests {
     }
 
     #[test]
+    fn extracts_invoice_clerk_from_the_block_after_its_label() {
+        let page = RecognitionPage::from_text(
+            "开票人:\n唐嫣\n成品油\n电子发票（普通发票）\n发票号码：26437000000252671049\n\
+             开票日期：2026年08月07日\n价税合计（大写）叁佰伍拾圆整\n（小写）¥350.00",
+        );
+
+        let info = parse_recognition_page(&page, 0, "pdf-text", false);
+
+        assert_eq!(info.invoice_clerk, "唐嫣");
+    }
+
+    #[test]
     fn extracts_non_tax_invoice() {
         let page = RecognitionPage::from_text(
             "江苏省非税收入统一票据（电子）\n票据号码：32000123456789012345\n\
