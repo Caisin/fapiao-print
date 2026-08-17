@@ -2,13 +2,19 @@
 
 ## 项目概览
 
-- **版本**: v2.3.0
+- **版本**: v2.3.1
 - **技术栈**: Tauri 2.x (Rust) + 原生 HTML/CSS/JS（无框架）
 - **前端**: `src/{index.html, styles.css, ocr.js, layout.js, print.js, app.js}`
 - **后端**: `src-tauri/src/{main.rs, lib.rs, pdf_engine.rs, pdfium_print.rs}`
 - **OFD/XML 解析**: `src-tauri/invoice-engine/` — 独立 crate（v2.0.6 从 ofd-engine 更名，v2.0.7 整合 XML 数电票）
 - **统一信息提取**: `src-tauri/invoice-extractor/` — 独立跨平台 crate，模块化解析 PDF/OFD/XML 与 OCR 结果
-- **双版本**: 轻量版 / OCR版（含 PP-OCRv5）
+- **双版本**: 轻量版 / OCR版（含 PP-OCRv6 small）
+
+### OCR 所有权
+
+- `invoice-extractor` 是发票 OCR 的唯一实现，`paddle.rs` 负责模型加载、图片预处理、EXIF 方向修正和结果坐标；主 Tauri crate 不直接依赖 `ocr-rs`
+- `src-tauri/src/lib.rs` 仅负责模型路径解析、PDF 页面渲染器注入和异步 IPC，不得把 OCR 引擎或字段解析逻辑放回 `pdf_engine.rs`
+- 模型目录：开发环境为 `src-tauri/models`，Windows/便携版为可执行文件旁的 `models`，macOS app bundle 为 `Contents/Resources/models`
 
 ## 常用命令
 
@@ -108,7 +114,7 @@ npm run bump <版本号>    # 同步版本号到 Cargo.toml + tauri.conf.json
 - **统一结果**: `{ success, filePath, fileName, fileType, pageCount, invoices[], warnings[] }`；票面字段含税率、中文大写金额和开票人，多页 PDF 每页对应一个 `invoices[]` 项
 - **模块边界**: `model / parser / formats / extractor / backend / paddle` 分文件维护，禁止将新解析逻辑堆回 `invoice-engine/lib.rs`
 - **跨平台约束**: crate 不依赖 Tauri/WinRT/CoreGraphics；PDF/OFD/XML 使用纯 Rust，OCR 通过 `OcrBackend` trait 注入
-- **PP-OCRv5 后端**: `paddle-ocr` feature 提供 `PaddleOcrBackend`，直接读取 `src-tauri/models` 三个模型文件；应用用 `OnceLock` 复用引擎
+- **PP-OCRv6 后端**: `paddle-ocr` feature 提供 `PaddleOcrBackend`，直接读取 `src-tauri/models` 的 v6-small 三个模型文件；应用用 `OnceLock` 复用引擎
 - **PDF OCR 适配**: `PdfPageRenderer` 隔离平台渲染；Tauri 适配层一次渲染整份 PDF、逐页消费缓存，避免多页 OCR 重复渲染
 - **OCR 行为**: `options.useOcr` 默认开启；轻量版可提取 PDF 文字层、OFD 和 XML，扫描 PDF 与图片需要 OCR 版
 

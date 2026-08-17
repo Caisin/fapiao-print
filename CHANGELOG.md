@@ -4,6 +4,23 @@
 
 ---
 
+## v2.3.1 — OCR 后端统一与 PP-OCRv6
+
+_2026-08-17_
+
+### 🐛 修复
+
+- 修复 macOS OCR 版从目录递归导入发票时找不到模型的问题，支持 app bundle 的 `Contents/Resources/models` 资源路径
+- OCR 开关关闭时不再初始化模型，模型缺失不会阻断 PDF/OFD/XML 等非 OCR 文件的目录导入
+
+### ♻️ 重构
+
+- 删除主程序 `pdf_engine.rs` 中重复的 OCR 引擎、PDF OCR 和结果结构实现，图片与 PDF OCR 统一由 `invoice-extractor::PaddleOcrBackend` 接管
+- 主 Tauri crate 不再直接依赖 `ocr-rs`；图片 EXIF 方向预处理迁入 `invoice-extractor`，Windows 与 macOS 共用同一套逻辑
+- OCR 引擎升级至 `ocr-rs 2.4.1` 和 PP-OCRv6 small，移除 PP-OCRv5 模型与兼容回退；模型资源由约 20.5 MB 降至约 15.7 MB
+
+---
+
 ## v2.3.0 — 跨平台发票解析与财务管理
 
 _2026-08-17_

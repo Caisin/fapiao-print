@@ -190,6 +190,18 @@ mod tests {
     }
 
     #[test]
+    fn extracts_uppercase_amount_when_ocr_places_it_before_the_label() {
+        let page = RecognitionPage::from_text(
+            "合计\n¥233.02\n¥13.98\n贰佰肆拾柒圆整\n(小写)¥247.00\n价税合计（大写）",
+        );
+
+        let info = parse_recognition_page(&page, 0, "ocr", true);
+
+        assert_eq!(info.amount_uppercase, "贰佰肆拾柒圆整");
+        assert_eq!(info.amount_tax, 247.0);
+    }
+
+    #[test]
     fn extracts_invoice_clerk_after_repeated_labels() {
         let page = RecognitionPage::from_text(
             "电子发票（普通发票）\n价税合计（小写）¥1813.86\n\

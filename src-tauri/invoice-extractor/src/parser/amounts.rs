@@ -268,7 +268,19 @@ fn extract_chinese_total_text(text: &str) -> String {
             }
         }
     }
-    String::new()
+    let fallback = regex
+        .find_iter(text)
+        .map(|value| value.as_str())
+        .find(|value| {
+            (value.contains('圆') || value.contains('元'))
+                && (value.contains('整')
+                    || value.contains('正')
+                    || value.contains('角')
+                    || value.contains('分'))
+        })
+        .unwrap_or_default()
+        .to_string();
+    fallback
 }
 
 fn parse_chinese_number(input: &str) -> f64 {

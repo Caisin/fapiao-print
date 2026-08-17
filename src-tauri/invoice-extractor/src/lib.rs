@@ -18,4 +18,7 @@ pub use model::{
 #[cfg(feature = "paddle-ocr")]
 pub use native_pdf::NativePdfRenderer;
 #[cfg(feature = "paddle-ocr")]
-pub use paddle::{NoPdfRenderer, PaddleOcrBackend, PdfPageRenderer};
+pub use paddle::{
+    validate_model_dir as validate_paddle_model_dir, NoPdfRenderer, PaddleOcrBackend,
+    PdfPageRenderer,
+};

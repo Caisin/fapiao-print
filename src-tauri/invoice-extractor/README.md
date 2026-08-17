@@ -10,7 +10,7 @@ renderer 单独隔离在 `native_pdf.rs`，其他平台仍可通过公共 trait 
 - `parser/`: 字段、金额、文本标准化与校验
 - `extractor.rs`: 文件类型分发和多页结果合并
 - `backend.rs`: OCR 后端接口
-- `paddle.rs`: 可选 PP-OCRv5/MNN 后端和 PDF 页面渲染接口
+- `paddle.rs`: 可选 PP-OCRv6 small/MNN 后端和 PDF 页面渲染接口
 - `native_pdf.rs`: 可选 macOS Core Graphics PDF 页面渲染器
 
 ## 使用
@@ -111,7 +111,7 @@ cargo run \
 
 ### 图片 OCR
 
-启用 `paddle-ocr` feature 后，可直接使用仓库现有 PP-OCRv5 模型：
+启用 `paddle-ocr` feature 后，可直接使用仓库现有 PP-OCRv6 small 模型：
 
 ```rust
 use invoice_extractor::{
@@ -142,9 +142,9 @@ cargo run \
 
 模型目录必须包含：
 
-- `PP-OCRv5_mobile_det.mnn`
-- `PP-OCRv5_mobile_rec.mnn`
-- `ppocr_keys_v5.txt`
+- `PP-OCRv6_small_det.mnn`
+- `PP-OCRv6_small_rec.mnn`
+- `ppocr_keys_v6_small.txt`
 
 `NativePdfRenderer` 在 macOS 上通过系统 Core Graphics 渲染 PDF，无需安装
 PDFium 或其他运行库；普通图片仍由 `PaddleOcrBackend` 直接读取。其他平台若

@@ -389,7 +389,7 @@ function findWordsNear(wordMap, regex, region, contextWords) {
 /**
  * Apply an already-parsed OCR result to a file object.
  * Extracts invoice info (amounts, seller) from OCR text/coordinates.
- * Used by both applyOcr() (image files) and render_and_ocr_pdf (PDF one-pass).
+ * Used by both image OCR and PDF page OCR through the shared Rust extractor backend.
  * Modifies fileObj in place.
  * @param {Object} fileObj - The file object to update
  * @param {Object} ocrResult - Parsed OCR result from Rust (with lines, imgW, imgH, text)
@@ -600,7 +600,7 @@ function applyPdfTextResult(fileObj, pdfTextResult) {
 
 /**
  * Apply OCR to a file object — calls Rust OCR then applies result.
- * Used for image files (non-PDF). PDF files use render_and_ocr_pdf one-pass instead.
+ * Used for image files (non-PDF). PDF files use the shared ocr_pdf_page backend.
  * Modifies fileObj in place, adding amount/seller info if detected.
  * @param {Object} fileObj - The file object to update
  * @param {string} dataUrl - Base64 data URL of the image to OCR (fallback)

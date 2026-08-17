@@ -4,9 +4,10 @@ use ocr_rs::{DetOptions, OcrEngine, OcrEngineConfig, RecOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-const DET_MODEL: &str = "PP-OCRv5_mobile_det.mnn";
-const REC_MODEL: &str = "PP-OCRv5_mobile_rec.mnn";
-const CHARSET: &str = "ppocr_keys_v5.txt";
+const MODEL_FAMILY: &str = "PP-OCRv6-small";
+const DET_MODEL: &str = "PP-OCRv6_small_det.mnn";
+const REC_MODEL: &str = "PP-OCRv6_small_rec.mnn";
+const CHARSET: &str = "ppocr_keys_v6_small.txt";
 
 pub trait PdfPageRenderer: Send + Sync {
     fn render_page(
@@ -46,7 +47,7 @@ impl PaddleOcrBackend<NoPdfRenderer> {
 impl<R: PdfPageRenderer> PaddleOcrBackend<R> {
     pub fn with_renderer(model_dir: impl Into<PathBuf>, renderer: R) -> Result<Self, String> {
         let model_dir = model_dir.into();
-        validate_models(&model_dir)?;
+        validate_model_dir(&model_dir)?;
         Ok(Self {
             model_dir,
             renderer,
@@ -56,6 +57,10 @@ impl<R: PdfPageRenderer> PaddleOcrBackend<R> {
 
     pub fn model_dir(&self) -> &Path {
         &self.model_dir
+    }
+
+    pub fn model_family(&self) -> &'static str {
+        MODEL_FAMILY
     }
 
     pub fn recognize_dynamic_image(
@@ -339,7 +344,10 @@ impl<R: PdfPageRenderer> OcrBackend for PaddleOcrBackend<R> {
     }
 
     fn recognize_image(&self, path: &Path, precision: &str) -> Result<RecognitionPage, String> {
-        let image = image::open(path).map_err(|error| format!("读取 OCR 图片失败: {error}"))?;
+        let bytes = std::fs::read(path).map_err(|error| format!("读取 OCR 图片失败: {error}"))?;
+        let image = image::load_from_memory(&bytes)
+            .map_err(|error| format!("解码 OCR 图片失败: {error}"))?;
+        let image = apply_exif_orientation(image, read_exif_orientation(&bytes));
         self.recognize_dynamic_image(image, precision)
     }
 
@@ -359,14 +367,16 @@ impl<R: PdfPageRenderer> OcrBackend for PaddleOcrBackend<R> {
     }
 }
 
-fn validate_models(model_dir: &Path) -> Result<(), String> {
-    for file_name in [DET_MODEL, REC_MODEL, CHARSET] {
-        let path = model_dir.join(file_name);
-        if !path.is_file() {
-            return Err(format!("OCR 模型文件不存在: {}", path.display()));
-        }
-    }
-    Ok(())
+pub fn validate_model_dir(model_dir: &Path) -> Result<(), String> {
+    [DET_MODEL, REC_MODEL, CHARSET]
+        .into_iter()
+        .find(|file_name| !model_dir.join(file_name).is_file())
+        .map_or(Ok(()), |file_name| {
+            Err(format!(
+                "PP-OCRv6 small 模型文件不存在: {}",
+                model_dir.join(file_name).display()
+            ))
+        })
 }
 
 fn resize_for_ocr(image: DynamicImage, max_dimension: u32) -> DynamicImage {
@@ -380,9 +390,67 @@ fn resize_for_ocr(image: DynamicImage, max_dimension: u32) -> DynamicImage {
     image.resize_exact(width, height, image::imageops::FilterType::Lanczos3)
 }
 
+fn read_exif_orientation(bytes: &[u8]) -> u32 {
+    let mut cursor = std::io::Cursor::new(bytes);
+    exif::Reader::new()
+        .read_from_container(&mut cursor)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|field| field.value.get_uint(0))
+        })
+        .filter(|orientation| (1..=8).contains(orientation))
+        .unwrap_or(1)
+}
+
+fn apply_exif_orientation(image: DynamicImage, orientation: u32) -> DynamicImage {
+    match orientation {
+        2 => image.fliph(),
+        3 => image.rotate180(),
+        4 => image.flipv(),
+        5 => image.fliph().rotate90(),
+        6 => image.rotate90(),
+        7 => image.fliph().rotate270(),
+        8 => image.rotate270(),
+        _ => image,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{GenericImageView, Rgba};
+
+    #[test]
+    fn applies_exif_rotation_before_ocr() {
+        let mut pixels = image::RgbaImage::new(2, 1);
+        pixels.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        pixels.put_pixel(1, 0, Rgba([0, 0, 255, 255]));
+
+        let rotated = apply_exif_orientation(DynamicImage::ImageRgba8(pixels), 6);
+
+        assert_eq!(rotated.dimensions(), (1, 2));
+        assert_eq!(rotated.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+        assert_eq!(rotated.get_pixel(0, 1), Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn accepts_complete_v6_small_model_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "invoice-extractor-v6-models-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for file_name in [DET_MODEL, REC_MODEL, CHARSET] {
+            std::fs::write(root.join(file_name), b"test").unwrap();
+        }
+
+        let backend = PaddleOcrBackend::from_model_dir(&root).unwrap();
+
+        assert_eq!(backend.model_family(), "PP-OCRv6-small");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn loads_repo_models_and_runs_inference() {

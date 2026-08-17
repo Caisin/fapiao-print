@@ -11,7 +11,7 @@ static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 fn check_windows_version() -> Result<(), String> {
     use windows::core::*;
     use windows::Win32::System::Registry::*;
-    
+
     unsafe {
         let mut hkey = HKEY::default();
         let result = RegOpenKeyExW(
@@ -21,11 +21,11 @@ fn check_windows_version() -> Result<(), String> {
             KEY_READ,
             &mut hkey,
         );
-        
+
         if result.is_ok() {
             let mut build_number = [0u16; 256];
             let mut build_number_size = (build_number.len() * 2) as u32;
-            
+
             let result = RegQueryValueExW(
                 hkey,
                 w!("CurrentBuildNumber"),
@@ -34,13 +34,14 @@ fn check_windows_version() -> Result<(), String> {
                 Some(build_number.as_mut_ptr() as *mut u8),
                 Some(&mut build_number_size),
             );
-            
+
             let _ = RegCloseKey(hkey);
-            
+
             if result.is_ok() {
-                let build_str = String::from_utf16_lossy(&build_number[..(build_number_size as usize / 2)]);
+                let build_str =
+                    String::from_utf16_lossy(&build_number[..(build_number_size as usize / 2)]);
                 let build_str = build_str.trim_end_matches('\0');
-                
+
                 if let Ok(build) = build_str.parse::<u32>() {
                     if build < 17134 {
                         return Err(format!(
@@ -52,7 +53,7 @@ fn check_windows_version() -> Result<(), String> {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -71,16 +72,14 @@ fn show_error_dialog(message: &str) {
         );
     }
 }
-use pdf_engine::{PrinterInfo, FileData, RenderedPage, LayoutRenderRequest, PdfTextResult};
-use invoice_extractor::{ExtractionOptions, InvoiceExtractor};
-#[cfg(not(feature = "ocr"))]
-use invoice_extractor::NoOcr;
 #[cfg(feature = "ocr")]
-use invoice_extractor::{PaddleOcrBackend, PdfPageRenderer};
+use invoice_extractor::{
+    validate_paddle_model_dir, OcrBackend, PaddleOcrBackend, PdfPageRenderer, RecognitionPage,
+};
+use invoice_extractor::{ExtractionOptions, InvoiceExtractor, NoOcr};
 #[cfg(target_os = "windows")]
 use pdf_engine::ComGuard;
-#[cfg(feature = "ocr")]
-use pdf_engine::{OcrResult, RenderedOcrPage};
+use pdf_engine::{FileData, LayoutRenderRequest, PdfTextResult, PrinterInfo, RenderedPage};
 
 // =====================================================
 // Tauri Commands
@@ -89,9 +88,9 @@ use pdf_engine::{OcrResult, RenderedOcrPage};
 /// Read files from given paths (for drag-and-drop and dialog plugin)
 #[command]
 async fn open_invoice_files(paths: Vec<String>) -> Result<Vec<FileData>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        pdf_engine::read_invoice_files(paths)
-    }).await.map_err(|e| format!("文件读取任务失败: {}", e))?
+    tauri::async_runtime::spawn_blocking(move || pdf_engine::read_invoice_files(paths))
+        .await
+        .map_err(|e| format!("文件读取任务失败: {}", e))?
 }
 
 /// Parse OFD file: returns SVG vector rendering + structured invoice data from XML.
@@ -106,9 +105,9 @@ fn parse_ofd(ofd_path: String) -> Result<invoice_engine::OfdResult, String> {
 /// Used for file list display, summary export, and batch rename.
 #[command]
 async fn parse_xml_invoice(xml_path: String) -> Result<invoice_engine::XmlInvoiceInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        invoice_engine::parse_xml_invoice(&xml_path)
-    }).await.map_err(|e| format!("XML 解析任务失败: {}", e))?
+    tauri::async_runtime::spawn_blocking(move || invoice_engine::parse_xml_invoice(&xml_path))
+        .await
+        .map_err(|e| format!("XML 解析任务失败: {}", e))?
 }
 
 /// Fallback: extract OFD pages as bitmap images (legacy path).
@@ -116,7 +115,8 @@ async fn parse_xml_invoice(xml_path: String) -> Result<invoice_engine::XmlInvoic
 #[command]
 fn open_ofd_images(ofd_path: String) -> Result<Vec<FileData>, String> {
     let path = std::path::Path::new(&ofd_path);
-    let name = path.file_name()
+    let name = path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
     let size = path.metadata().ok().map(|m| m.len()).unwrap_or(0);
@@ -124,7 +124,11 @@ fn open_ofd_images(ofd_path: String) -> Result<Vec<FileData>, String> {
     let images = invoice_engine::extract_ofd_images_raw(&ofd_path)?;
     let mut results = Vec::new();
     for (idx, img) in images.iter().enumerate() {
-        let base_name = if name.len() > 4 { &name[..name.len()-4] } else { &name };
+        let base_name = if name.len() > 4 {
+            &name[..name.len() - 4]
+        } else {
+            &name
+        };
         results.push(FileData {
             name: if images.len() > 1 {
                 format!("{}_第{}页.ofd", base_name, idx + 1)
@@ -151,20 +155,28 @@ fn get_printers() -> Result<Vec<PrinterInfo>, String> {
 /// Render PDF pages to images using Windows native API
 /// - `use_jpeg`: if true, encode as JPEG for faster loading (default: true for preview)
 #[command]
-async fn render_pdf_pages(pdf_path: String, dpi: Option<u32>, use_jpeg: Option<bool>) -> Result<Vec<RenderedPage>, String> {
+async fn render_pdf_pages(
+    pdf_path: String,
+    dpi: Option<u32>,
+    use_jpeg: Option<bool>,
+) -> Result<Vec<RenderedPage>, String> {
     use std::sync::atomic::Ordering;
     if pdf_engine::SHUTTING_DOWN.load(Ordering::SeqCst) {
         return Err("应用正在关闭".to_string());
     }
     let d = dpi.unwrap_or(pdf_engine::RENDER_DPI);
     let j = use_jpeg.unwrap_or(true);
-    tauri::async_runtime::spawn_blocking(move || {
-        pdf_engine::render_pdf_pages(&pdf_path, d, j)
-    }).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || pdf_engine::render_pdf_pages(&pdf_path, d, j))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[command]
-async fn render_pdf_pages_pdfium(pdf_path: String, dpi: Option<u32>, use_jpeg: Option<bool>) -> Result<Vec<RenderedPage>, String> {
+async fn render_pdf_pages_pdfium(
+    pdf_path: String,
+    dpi: Option<u32>,
+    use_jpeg: Option<bool>,
+) -> Result<Vec<RenderedPage>, String> {
     use std::sync::atomic::Ordering;
     if pdf_engine::SHUTTING_DOWN.load(Ordering::SeqCst) {
         return Err("应用正在关闭".to_string());
@@ -173,24 +185,14 @@ async fn render_pdf_pages_pdfium(pdf_path: String, dpi: Option<u32>, use_jpeg: O
     let j = use_jpeg.unwrap_or(true);
     tauri::async_runtime::spawn_blocking(move || {
         pdf_engine::render_pdf_pages_pdfium(&pdf_path, d, j)
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[command]
 fn check_winrt_pdf() -> bool {
     pdf_engine::check_winrt_pdf_available()
-}
-
-/// Render PDF pages AND run OCR in one pass — avoids IPC round-trip.
-/// Returns preview images + OCR results together.
-#[cfg(feature = "ocr")]
-#[command]
-fn render_and_ocr_pdf(pdf_path: String, dpi: Option<u32>, ocr_precision: Option<String>) -> Result<Vec<RenderedOcrPage>, String> {
-    use std::sync::atomic::Ordering;
-    if pdf_engine::SHUTTING_DOWN.load(Ordering::SeqCst) {
-        return Err("应用正在关闭".to_string());
-    }
-    pdf_engine::render_and_ocr_pdf(&pdf_path, dpi.unwrap_or(pdf_engine::RENDER_DPI), ocr_precision.as_deref())
 }
 
 /// Open a file with the default application (for auto-opening saved PDFs)
@@ -222,8 +224,13 @@ fn copy_file(src_path: String, dest_path: String) -> Result<serde_json::Value, S
     let dest = std::path::Path::new(&dest_path);
     if let Some(parent) = dest.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to copy file: 无法创建目标目录 '{}': {}", parent.display(), e))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to copy file: 无法创建目标目录 '{}': {}",
+                    parent.display(),
+                    e
+                )
+            })?;
         }
     }
     let size = std::fs::copy(src, dest)
@@ -264,8 +271,9 @@ async fn rename_file(src_path: String, dest_path: String) -> Result<serde_json::
                 // On cross-device error, fall back to copy + delete
                 if e.raw_os_error() == Some(17) {
                     // ERROR_NOT_SAME_DEVICE on Windows
-                    let size = std::fs::copy(src, dest)
-                        .map_err(|e2| format!("跨盘符复制失败 {} → {}: {}", src_path, dest_path, e2))?;
+                    let size = std::fs::copy(src, dest).map_err(|e2| {
+                        format!("跨盘符复制失败 {} → {}: {}", src_path, dest_path, e2)
+                    })?;
                     std::fs::remove_file(src)
                         .map_err(|e2| format!("删除源文件失败 {}: {}", src_path, e2))?;
                     return Ok(serde_json::json!({
@@ -284,7 +292,9 @@ async fn rename_file(src_path: String, dest_path: String) -> Result<serde_json::
             "srcPath": src_path,
             "destPath": dest_path
         }))
-    }).await.map_err(|e| format!("任务执行失败: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// Write UTF-8 text content to a file (creates parent dirs if needed).
@@ -299,10 +309,11 @@ async fn write_text_file(path: String, content: String) -> Result<serde_json::Va
                     .map_err(|e| format!("无法创建目录 '{}': {}", parent.display(), e))?;
             }
         }
-        std::fs::write(dest, &content)
-            .map_err(|e| format!("写入文件失败: {}", e))?;
+        std::fs::write(dest, &content).map_err(|e| format!("写入文件失败: {}", e))?;
         Ok(serde_json::json!({ "success": true, "path": path }))
-    }).await.map_err(|e| format!("任务执行失败: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 /// Open a URL in the default browser
@@ -317,12 +328,36 @@ fn open_url(url: String) -> Result<(), String> {
 /// Falls back to `dataUrl` when `filePath` is None or file read fails.
 #[cfg(feature = "ocr")]
 #[command]
-fn ocr_image(data_url: String, file_path: Option<String>, ocr_precision: Option<String>) -> Result<OcrResult, String> {
+async fn ocr_image(
+    data_url: String,
+    file_path: Option<String>,
+    ocr_precision: Option<String>,
+) -> Result<RecognitionPage, String> {
     use std::sync::atomic::Ordering;
     if pdf_engine::SHUTTING_DOWN.load(Ordering::SeqCst) {
         return Err("应用正在关闭".to_string());
     }
-    pdf_engine::ocr_image(&data_url, file_path.as_deref(), ocr_precision.as_deref())
+    tauri::async_runtime::spawn_blocking(move || {
+        let precision = ocr_precision.as_deref().unwrap_or("standard");
+        let backend = invoice_ocr_backend()?;
+        if let Some(path) = file_path.filter(|path| !path.is_empty()) {
+            let path = std::path::Path::new(&path);
+            if path.is_file() {
+                match backend.recognize_image(path, precision) {
+                    Ok(page) => return Ok(page),
+                    Err(error) if data_url.is_empty() => return Err(error),
+                    Err(error) => log::warn!("OCR 直接读取文件失败，回退到图片数据: {error}"),
+                }
+            }
+        }
+        if data_url.is_empty() {
+            return Err("OCR 图片路径和数据均为空".to_string());
+        }
+        let image = pdf_engine::decode_base64_image(&data_url)?;
+        backend.recognize_dynamic_image(image, precision)
+    })
+    .await
+    .map_err(|error| format!("OCR 任务失败: {error}"))?
 }
 
 /// Render a single PDF page and run OCR on it — zero IPC round-trip.
@@ -330,19 +365,40 @@ fn ocr_image(data_url: String, file_path: Option<String>, ocr_precision: Option<
 /// avoiding the expensive Rust→base64→IPC→frontend→downsample→base64→IPC→Rust cycle.
 #[cfg(feature = "ocr")]
 #[command]
-fn ocr_pdf_page(pdf_path: String, page_index: u32, dpi: Option<u32>, ocr_precision: Option<String>) -> Result<OcrResult, String> {
+async fn ocr_pdf_page(
+    pdf_path: String,
+    page_index: u32,
+    dpi: Option<u32>,
+    ocr_precision: Option<String>,
+) -> Result<RecognitionPage, String> {
     use std::sync::atomic::Ordering;
     if pdf_engine::SHUTTING_DOWN.load(Ordering::SeqCst) {
         return Err("应用正在关闭".to_string());
     }
-    pdf_engine::ocr_pdf_page(&pdf_path, page_index, dpi, ocr_precision.as_deref())
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = dpi;
+        invoice_ocr_backend()?.recognize_pdf_page(
+            std::path::Path::new(&pdf_path),
+            page_index,
+            ocr_precision.as_deref().unwrap_or("standard"),
+        )
+    })
+    .await
+    .map_err(|error| format!("PDF OCR 任务失败: {error}"))?
 }
 
 /// Check whether OCR feature is available at runtime.
 /// Frontend calls this once at startup to decide whether to show OCR UI.
 #[command]
 fn check_ocr_available() -> bool {
-    pdf_engine::check_ocr_available()
+    #[cfg(feature = "ocr")]
+    {
+        resolve_invoice_ocr_model_dir().is_ok()
+    }
+    #[cfg(not(feature = "ocr"))]
+    {
+        false
+    }
 }
 
 /// Extract text with coordinates from a PDF page's content stream.
@@ -354,8 +410,7 @@ fn check_ocr_available() -> bool {
 #[command]
 async fn extract_pdf_text(pdf_path: String, page_idx: u32) -> Result<PdfTextResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        pdf_engine::extract_pdf_text(&pdf_path, page_idx)
-            .map_err(|e| e.to_string())
+        pdf_engine::extract_pdf_text(&pdf_path, page_idx).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("PDF文字提取任务失败: {}", e))?
@@ -365,10 +420,12 @@ async fn extract_pdf_text(pdf_path: String, page_idx: u32) -> Result<PdfTextResu
 /// ~5ms per page, with parallelism (rayon) for multi-page PDFs.
 /// Uses `spawn_blocking` to run CPU-intensive PDF parsing off the IPC thread.
 #[command]
-async fn extract_pdf_texts(pdf_path: String, page_indices: Vec<u32>) -> Result<std::collections::HashMap<u32, PdfTextResult>, String> {
+async fn extract_pdf_texts(
+    pdf_path: String,
+    page_indices: Vec<u32>,
+) -> Result<std::collections::HashMap<u32, PdfTextResult>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        pdf_engine::extract_pdf_texts(&pdf_path, &page_indices)
-            .map_err(|e| e.to_string())
+        pdf_engine::extract_pdf_texts(&pdf_path, &page_indices).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("PDF文字提取任务失败: {}", e))?
@@ -395,17 +452,20 @@ impl PdfPageRenderer for AppPdfPageRenderer {
         page_index: u32,
         dpi: u32,
     ) -> Result<image::DynamicImage, String> {
-        let mut cache = self.cache.lock()
+        let mut cache = self
+            .cache
+            .lock()
             .map_err(|error| format!("PDF OCR 页面缓存锁失败: {error}"))?;
-        let cache_matches = cache.as_ref()
+        let cache_matches = cache
+            .as_ref()
             .map(|cached| {
-                cached.path == path
-                    && cached.dpi == dpi
-                    && cached.pages.contains_key(&page_index)
+                cached.path == path && cached.dpi == dpi && cached.pages.contains_key(&page_index)
             })
             .unwrap_or(false);
         if !cache_matches {
-            let path_text = path.to_str().ok_or_else(|| "PDF 路径不是有效 UTF-8".to_string())?;
+            let path_text = path
+                .to_str()
+                .ok_or_else(|| "PDF 路径不是有效 UTF-8".to_string())?;
             let pages = pdf_engine::render_pdf_pages(path_text, dpi, false)?
                 .into_iter()
                 .map(|page| {
@@ -419,7 +479,8 @@ impl PdfPageRenderer for AppPdfPageRenderer {
                 pages,
             });
         }
-        cache.as_mut()
+        cache
+            .as_mut()
             .and_then(|cached| cached.pages.remove(&page_index))
             .ok_or_else(|| format!("页码超出范围: 请求第{}页", page_index + 1))
     }
@@ -446,16 +507,26 @@ fn resolve_invoice_ocr_model_dir() -> Result<std::path::PathBuf, String> {
     let executable_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
-    let mut candidates = vec![development];
+    resolve_invoice_ocr_model_dir_from(&development, executable_dir.as_deref())
+}
+
+#[cfg(feature = "ocr")]
+fn resolve_invoice_ocr_model_dir_from(
+    development: &std::path::Path,
+    executable_dir: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let mut candidates = vec![development.to_path_buf()];
     if let Some(directory) = executable_dir {
         candidates.push(directory.join("models"));
-        candidates.push(directory);
+        candidates.push(directory.to_path_buf());
+        if let Some(contents) = directory.parent() {
+            candidates.push(contents.join("Resources/models"));
+        }
     }
-    candidates.into_iter()
-        .find(|directory| directory.join("PP-OCRv5_mobile_det.mnn").is_file()
-            && directory.join("PP-OCRv5_mobile_rec.mnn").is_file()
-            && directory.join("ppocr_keys_v5.txt").is_file())
-        .ok_or_else(|| "未找到 PP-OCRv5 模型目录".to_string())
+    candidates
+        .into_iter()
+        .find(|directory| validate_paddle_model_dir(directory).is_ok())
+        .ok_or_else(|| "未找到可用的 PP-OCRv6 small 模型目录".to_string())
 }
 
 /// Extract all invoice fields through the platform-neutral invoice-extractor crate.
@@ -466,14 +537,18 @@ async fn extract_invoice_file(
     options: Option<ExtractionOptions>,
 ) -> Result<invoice_extractor::InvoiceFileResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let options = options.unwrap_or_default();
         #[cfg(feature = "ocr")]
         {
-            return InvoiceExtractor::new(invoice_ocr_backend()?)
-                .extract_file(file_path, options.unwrap_or_default());
+            if options.use_ocr {
+                return InvoiceExtractor::new(invoice_ocr_backend()?)
+                    .extract_file(file_path, options);
+            }
+            InvoiceExtractor::new(NoOcr).extract_file(file_path, options)
         }
         #[cfg(not(feature = "ocr"))]
         {
-            InvoiceExtractor::new(NoOcr).extract_file(file_path, options.unwrap_or_default())
+            InvoiceExtractor::new(NoOcr).extract_file(file_path, options)
         }
     })
     .await
@@ -487,15 +562,18 @@ async fn extract_invoice_directory(
     options: Option<ExtractionOptions>,
 ) -> Result<invoice_extractor::InvoiceDirectoryResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let options = options.unwrap_or_default();
         #[cfg(feature = "ocr")]
         {
-            return InvoiceExtractor::new(invoice_ocr_backend()?)
-                .extract_directory(directory_path, options.unwrap_or_default());
+            if options.use_ocr {
+                return InvoiceExtractor::new(invoice_ocr_backend()?)
+                    .extract_directory(directory_path, options);
+            }
+            InvoiceExtractor::new(NoOcr).extract_directory(directory_path, options)
         }
         #[cfg(not(feature = "ocr"))]
         {
-            InvoiceExtractor::new(NoOcr)
-                .extract_directory(directory_path, options.unwrap_or_default())
+            InvoiceExtractor::new(NoOcr).extract_directory(directory_path, options)
         }
     })
     .await
@@ -547,8 +625,12 @@ fn compare_versions(a: &str, b: &str) -> i32 {
     for i in 0..n {
         let va = *pa.get(i).unwrap_or(&0);
         let vb = *pb.get(i).unwrap_or(&0);
-        if va < vb { return -1; }
-        if va > vb { return 1; }
+        if va < vb {
+            return -1;
+        }
+        if va > vb {
+            return 1;
+        }
     }
     0
 }
@@ -584,20 +666,21 @@ async fn check_for_updates() -> Result<UpdateInfo, String> {
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.text().await {
-                    Ok(text) => { body = Some(text); break; }
-                    Err(e) => last_err = format!("读取响应失败: {}", e),
+            Ok(resp) if resp.status().is_success() => match resp.text().await {
+                Ok(text) => {
+                    body = Some(text);
+                    break;
                 }
-            }
+                Err(e) => last_err = format!("读取响应失败: {}", e),
+            },
             Ok(resp) => last_err = format!("API返回状态: {}", resp.status()),
             Err(e) => last_err = format!("请求失败: {}", e),
         }
     }
     let body = body.ok_or_else(|| format!("GitHub更新检查失败: {}", last_err))?;
 
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("解析响应失败: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("解析响应失败: {}", e))?;
 
     let tag = json["tag_name"].as_str().unwrap_or("").to_string();
     let latest = tag.trim_start_matches('v').to_string();
@@ -675,13 +758,13 @@ fn trim_image_impl(data_url: String) -> Result<(String, pdf_engine::ImageTrimBou
     use base64::Engine;
     use std::io::Cursor;
 
-    let img = pdf_engine::decode_base64_image(&data_url)
-        .map_err(|e| format!("解码失败: {}", e))?;
+    let img = pdf_engine::decode_base64_image(&data_url).map_err(|e| format!("解码失败: {}", e))?;
     let (trimmed, bounds) = pdf_engine::trim_white_edges_with_bounds(&img, 245);
 
     // Encode back to PNG base64
     let mut buf = Cursor::new(Vec::new());
-    trimmed.write_to(&mut buf, image::ImageFormat::Png)
+    trimmed
+        .write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| format!("PNG编码失败: {}", e))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
@@ -726,11 +809,9 @@ async fn trim_image_with_bounds(data_url: String) -> Result<TrimImageResult, Str
 /// keeping the IPC thread free (same pattern as extract_pdf_text).
 #[command]
 async fn enhance_image(file_path: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        pdf_engine::enhance_image(&file_path)
-    })
-    .await
-    .map_err(|e| format!("图片增强任务失败: {}", e))?
+    tauri::async_runtime::spawn_blocking(move || pdf_engine::enhance_image(&file_path))
+        .await
+        .map_err(|e| format!("图片增强任务失败: {}", e))?
 }
 
 /// Generate PDF from layout request (files + pages + settings).
@@ -762,11 +843,14 @@ async fn generate_pdf_from_layout(
     let app_handle = app.clone();
 
     let progress_cb: pdf_engine::ProgressFn = Box::new(move |phase, current, total| {
-        let _ = app_handle.emit("pdf-progress", serde_json::json!({
-            "phase": phase,
-            "current": current,
-            "total": total,
-        }));
+        let _ = app_handle.emit(
+            "pdf-progress",
+            serde_json::json!({
+                "phase": phase,
+                "current": current,
+                "total": total,
+            }),
+        );
     });
 
     let output_for_print = output.clone();
@@ -804,8 +888,9 @@ async fn generate_pdf_from_layout(
         if is_direct {
             let resolved_printer = match &printer_name {
                 Some(name) if !name.is_empty() => name.clone(),
-                _ => pdf_engine::get_default_printer_name()
-                    .ok_or("未找到默认打印机".to_string())?,
+                _ => {
+                    pdf_engine::get_default_printer_name().ok_or("未找到默认打印机".to_string())?
+                }
             };
             if let Some(sumatra) = pdf_engine::find_sumatrapdf() {
                 let settings_str = pdf_engine::build_sumatra_print_settings(
@@ -817,7 +902,10 @@ async fn generate_pdf_from_layout(
                     Some(print_settings.5),
                 );
                 pdf_engine::print_with_sumatrapdf(
-                    &sumatra.path, &output_for_print, &resolved_printer, &settings_str,
+                    &sumatra.path,
+                    &output_for_print,
+                    &resolved_printer,
+                    &settings_str,
                 )?;
             } else {
                 let printed = shell_execute_print(&output_for_print, printer_name.as_deref())?;
@@ -958,11 +1046,14 @@ async fn pdfium_vector_print(
 
     let app_handle = app.clone();
     let progress_cb: pdf_engine::ProgressFn = Box::new(move |phase, current, total| {
-        let _ = app_handle.emit("pdf-progress", serde_json::json!({
-            "phase": phase,
-            "current": current,
-            "total": total,
-        }));
+        let _ = app_handle.emit(
+            "pdf-progress",
+            serde_json::json!({
+                "phase": phase,
+                "current": current,
+                "total": total,
+            }),
+        );
     });
 
     let temp_dir = std::env::temp_dir().join("ticketchan_pdfium");
@@ -991,7 +1082,8 @@ async fn pdfium_vector_print(
         color_mode,
         paper_w,
         paper_h,
-    ).await?;
+    )
+    .await?;
 
     Ok(result)
 }
@@ -1027,17 +1119,19 @@ async fn pdfium_print_pdf(
             .ok_or("未找到默认打印机，请在系统设置中配置打印机，或在打印设置中手动选择。")?,
     };
 
-    let pdf_bytes = std::fs::read(path)
-        .map_err(|e| format!("读取PDF失败: {}", e))?;
+    let pdf_bytes = std::fs::read(path).map_err(|e| format!("读取PDF失败: {}", e))?;
 
     let app_for_progress = app.clone();
     let printer = resolved_printer.clone();
     let print_progress_cb = move |current: u32, total: u32| {
-        let _ = app_for_progress.emit("pdf-progress", serde_json::json!({
-            "phase": "print",
-            "current": current,
-            "total": total,
-        }));
+        let _ = app_for_progress.emit(
+            "pdf-progress",
+            serde_json::json!({
+                "phase": "print",
+                "current": current,
+                "total": total,
+            }),
+        );
     };
 
     let print_result = tauri::async_runtime::spawn_blocking(move || {
@@ -1075,8 +1169,7 @@ async fn download_pdfium_dll(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         .to_path_buf();
 
     let tools_dir = exe_dir.join("tools");
-    std::fs::create_dir_all(&tools_dir)
-        .map_err(|e| format!("创建 tools 目录失败: {}", e))?;
+    std::fs::create_dir_all(&tools_dir).map_err(|e| format!("创建 tools 目录失败: {}", e))?;
 
     let dest = tools_dir.join("pdfium.dll");
     if dest.exists() {
@@ -1097,9 +1190,10 @@ async fn download_pdfium_dll(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         .map_err(|e| format!("创建下载客户端失败: {}", e))?;
 
     {
-        let mut file = std::fs::File::create(&tgz_path)
-            .map_err(|e| format!("创建临时文件失败: {}", e))?;
-        let mut stream = client.get(dll_url)
+        let mut file =
+            std::fs::File::create(&tgz_path).map_err(|e| format!("创建临时文件失败: {}", e))?;
+        let mut stream = client
+            .get(dll_url)
             .send()
             .await
             .map_err(|e| format!("下载失败: {}", e))?;
@@ -1112,7 +1206,11 @@ async fn download_pdfium_dll(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         let total_size = stream.content_length().unwrap_or(0);
         let mut downloaded: u64 = 0;
 
-        while let Some(chunk) = stream.chunk().await.map_err(|e| format!("下载出错: {}", e))? {
+        while let Some(chunk) = stream
+            .chunk()
+            .await
+            .map_err(|e| format!("下载出错: {}", e))?
+        {
             if DOWNLOAD_CANCELLED.load(AtomicOrdering::SeqCst) {
                 drop(file);
                 std::fs::remove_file(&tgz_path).ok();
@@ -1130,24 +1228,26 @@ async fn download_pdfium_dll(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         }
     }
 
-    let tgz_file = std::fs::File::open(&tgz_path)
-        .map_err(|e| format!("打开 tgz 失败: {}", e))?;
+    let tgz_file = std::fs::File::open(&tgz_path).map_err(|e| format!("打开 tgz 失败: {}", e))?;
     let gz_decoder = flate2::read::GzDecoder::new(tgz_file);
     let mut archive = tar::Archive::new(gz_decoder);
     let mut found_dll = false;
 
-    for entry_result in archive.entries().map_err(|e| format!("解析 tgz 失败: {}", e))? {
+    for entry_result in archive
+        .entries()
+        .map_err(|e| format!("解析 tgz 失败: {}", e))?
+    {
         let mut entry = entry_result.map_err(|e| format!("读取 tgz 条目失败: {}", e))?;
         let path = entry.path().map_err(|e| format!("获取路径失败: {}", e))?;
-        let file_name = path.file_name()
+        let file_name = path
+            .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_default();
 
         if file_name.eq_ignore_ascii_case("pdfium.dll") {
-            let mut out_file = std::fs::File::create(&dest)
-                .map_err(|e| format!("创建 pdfium.dll 失败: {}", e))?;
-            std::io::copy(&mut entry, &mut out_file)
-                .map_err(|e| format!("解压失败: {}", e))?;
+            let mut out_file =
+                std::fs::File::create(&dest).map_err(|e| format!("创建 pdfium.dll 失败: {}", e))?;
+            std::io::copy(&mut entry, &mut out_file).map_err(|e| format!("解压失败: {}", e))?;
             found_dll = true;
             break;
         }
@@ -1211,8 +1311,7 @@ async fn download_sumatrapdf(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         .ok_or("无法获取应用目录")?
         .join("tools");
 
-    std::fs::create_dir_all(&tools_dir)
-        .map_err(|e| format!("创建目录失败: {}", e))?;
+    std::fs::create_dir_all(&tools_dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
     let dest = tools_dir.join("SumatraPDF.exe");
 
@@ -1234,9 +1333,10 @@ async fn download_sumatrapdf(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         .map_err(|e| format!("创建下载客户端失败: {}", e))?;
 
     {
-        let mut file = std::fs::File::create(&zip_path)
-            .map_err(|e| format!("创建临时文件失败: {}", e))?;
-        let mut stream = client.get(zip_url)
+        let mut file =
+            std::fs::File::create(&zip_path).map_err(|e| format!("创建临时文件失败: {}", e))?;
+        let mut stream = client
+            .get(zip_url)
             .send()
             .await
             .map_err(|e| format!("下载失败: {}", e))?;
@@ -1249,7 +1349,11 @@ async fn download_sumatrapdf(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         let total_size = stream.content_length().unwrap_or(0);
         let mut downloaded: u64 = 0;
 
-        while let Some(chunk) = stream.chunk().await.map_err(|e| format!("下载出错: {}", e))? {
+        while let Some(chunk) = stream
+            .chunk()
+            .await
+            .map_err(|e| format!("下载出错: {}", e))?
+        {
             if DOWNLOAD_CANCELLED.load(AtomicOrdering::SeqCst) {
                 drop(file);
                 std::fs::remove_file(&zip_path).ok();
@@ -1267,15 +1371,15 @@ async fn download_sumatrapdf(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         }
     }
 
-    let zip_file = std::fs::File::open(&zip_path)
-        .map_err(|e| format!("打开 ZIP 失败: {}", e))?;
-    let mut archive = zip::ZipArchive::new(zip_file)
-        .map_err(|e| format!("解析 ZIP 失败: {}", e))?;
+    let zip_file = std::fs::File::open(&zip_path).map_err(|e| format!("打开 ZIP 失败: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(zip_file).map_err(|e| format!("解析 ZIP 失败: {}", e))?;
 
     let mut found_exe = false;
     let mut zip_entries: Vec<String> = Vec::new();
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
+        let mut file = archive
+            .by_index(i)
             .map_err(|e| format!("读取 ZIP 条目失败: {}", e))?;
         let name = file.name().to_string();
         zip_entries.push(name.clone());
@@ -1290,8 +1394,7 @@ async fn download_sumatrapdf(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
         {
             let mut out_file = std::fs::File::create(&dest)
                 .map_err(|e| format!("创建 SumatraPDF.exe 失败: {}", e))?;
-            std::io::copy(&mut file, &mut out_file)
-                .map_err(|e| format!("解压失败: {}", e))?;
+            std::io::copy(&mut file, &mut out_file).map_err(|e| format!("解压失败: {}", e))?;
             found_exe = true;
             break;
         }
@@ -1301,7 +1404,10 @@ async fn download_sumatrapdf(app: tauri::AppHandle) -> Result<pdf_engine::PdfRes
 
     if !found_exe {
         log::warn!("ZIP entries: {:?}", zip_entries);
-        return Err(format!("ZIP 中未找到 SumatraPDF.exe，包含文件: {}", zip_entries.join(", ")));
+        return Err(format!(
+            "ZIP 中未找到 SumatraPDF.exe，包含文件: {}",
+            zip_entries.join(", ")
+        ));
     }
 
     log::info!("SumatraPDF downloaded to: {}", dest.display());
@@ -1336,8 +1442,7 @@ fn sumatrapdf_print(
 
     let resolved_printer = match printer_name {
         Some(name) if !name.is_empty() => name,
-        _ => pdf_engine::get_default_printer_name()
-            .ok_or("未找到默认打印机".to_string())?,
+        _ => pdf_engine::get_default_printer_name().ok_or("未找到默认打印机".to_string())?,
     };
 
     let settings_str = pdf_engine::build_sumatra_print_settings(
@@ -1420,16 +1525,20 @@ fn shell_execute(verb: &str, file: &str) -> Result<(), String> {
 /// Strategy 3: ShellExecuteW "open" — fallback: open PDF for manual printing
 /// Returns Ok(true) if printed, Ok(false) if opened as fallback.
 #[cfg(target_os = "windows")]
-fn shell_execute_print(pdf_path: &std::path::Path, printer_name: Option<&str>) -> Result<bool, String> {
+fn shell_execute_print(
+    pdf_path: &std::path::Path,
+    printer_name: Option<&str>,
+) -> Result<bool, String> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNORMAL, SW_SHOW};
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOW, SW_SHOWNORMAL};
 
     let resolved_printer: Option<String> = match printer_name {
         Some(name) => Some(name.to_string()),
         None => pdf_engine::get_default_printer_name(),
     };
-    let printer_str = resolved_printer.as_deref()
+    let printer_str = resolved_printer
+        .as_deref()
         .ok_or("未找到默认打印机，请在系统设置中配置打印机，或在打印设置中手动选择。")?;
 
     let _com = ComGuard::init();
@@ -1441,33 +1550,25 @@ fn shell_execute_print(pdf_path: &std::path::Path, printer_name: Option<&str>) -
         let printer_hstring: HSTRING = printer_str.into();
         let params = PCWSTR::from_raw(printer_hstring.as_ptr());
 
-        let ret = ShellExecuteW(
-            None,
-            &verb,
-            &file,
-            params,
-            PCWSTR::null(),
-            SW_HIDE,
-        );
+        let ret = ShellExecuteW(None, &verb, &file, params, PCWSTR::null(), SW_HIDE);
         if ret.0 as isize > 32 {
             return Ok(true);
         }
-        log::warn!("ShellExecute printto failed (code: {}), trying simple print", ret.0 as isize);
+        log::warn!(
+            "ShellExecute printto failed (code: {}), trying simple print",
+            ret.0 as isize
+        );
 
         // Strategy 2: ShellExecuteW "print" without specifying printer
         let verb: HSTRING = "print".into();
-        let ret = ShellExecuteW(
-            None,
-            &verb,
-            &file,
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOW,
-        );
+        let ret = ShellExecuteW(None, &verb, &file, PCWSTR::null(), PCWSTR::null(), SW_SHOW);
         if ret.0 as isize > 32 {
             return Ok(true);
         }
-        log::warn!("ShellExecute print failed (code: {}), falling back to open", ret.0 as isize);
+        log::warn!(
+            "ShellExecute print failed (code: {}), falling back to open",
+            ret.0 as isize
+        );
 
         // Strategy 3: Fallback — open the PDF so user can print manually
         let verb: HSTRING = "open".into();
@@ -1489,7 +1590,6 @@ fn shell_execute_print(pdf_path: &std::path::Path, printer_name: Option<&str>) -
         ));
     }
 }
-
 
 // =====================================================
 // App Entry
@@ -1561,7 +1661,9 @@ pub fn run() {
                                 std::thread::sleep(std::time::Duration::from_millis(300));
                                 #[cfg(target_os = "windows")]
                                 unsafe {
-                                    use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+                                    use windows::Win32::System::Threading::{
+                                        GetCurrentProcess, TerminateProcess,
+                                    };
                                     let _ = TerminateProcess(GetCurrentProcess(), 0);
                                 }
                                 #[cfg(not(target_os = "windows"))]
@@ -1574,7 +1676,9 @@ pub fn run() {
                             // DLL_PROCESS_DETACH (e.g. MNN/OCR engine holding a lock).
                             #[cfg(target_os = "windows")]
                             unsafe {
-                                use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+                                use windows::Win32::System::Threading::{
+                                    GetCurrentProcess, TerminateProcess,
+                                };
                                 let _ = TerminateProcess(GetCurrentProcess(), 0);
                             }
                             #[cfg(not(target_os = "windows"))]
@@ -1582,17 +1686,32 @@ pub fn run() {
                         }
                         tauri::WindowEvent::DragDrop(drop_event) => {
                             if let tauri::DragDropEvent::Drop { paths, .. } = drop_event {
-                                let valid: Vec<String> = paths.iter()
+                                let valid: Vec<String> = paths
+                                    .iter()
                                     .filter_map(|p| {
-                                        let valid_ext = p.extension()
+                                        let valid_ext = p
+                                            .extension()
                                             .and_then(|e| e.to_str())
-                                            .map(|e| ["pdf", "jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "ofd", "xml"].contains(&e.to_lowercase().as_str()))
+                                            .map(|e| {
+                                                [
+                                                    "pdf", "jpg", "jpeg", "png", "bmp", "webp",
+                                                    "tiff", "tif", "ofd", "xml",
+                                                ]
+                                                .contains(&e.to_lowercase().as_str())
+                                            })
                                             .unwrap_or(false);
-                                        if valid_ext { Some(p.to_string_lossy().to_string()) } else { None }
+                                        if valid_ext {
+                                            Some(p.to_string_lossy().to_string())
+                                        } else {
+                                            None
+                                        }
                                     })
                                     .collect();
                                 let json = serde_json::to_string(&valid).unwrap_or_default();
-                                let js = format!("if(window._tauriFileDrop)window._tauriFileDrop({})", json);
+                                let js = format!(
+                                    "if(window._tauriFileDrop)window._tauriFileDrop({})",
+                                    json
+                                );
                                 let _ = win.eval(&js);
                             }
                         }
@@ -1611,7 +1730,6 @@ pub fn run() {
         render_pdf_pages,
         render_pdf_pages_pdfium,
         check_winrt_pdf,
-        render_and_ocr_pdf,
         open_url,
         open_file,
         copy_file,
@@ -1694,4 +1812,57 @@ pub fn run() {
     builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, feature = "ocr"))]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn write_fake_models(directory: &Path) {
+        std::fs::create_dir_all(directory).unwrap();
+        for name in [
+            "PP-OCRv6_small_det.mnn",
+            "PP-OCRv6_small_rec.mnn",
+            "ppocr_keys_v6_small.txt",
+        ] {
+            std::fs::write(directory.join(name), b"test").unwrap();
+        }
+    }
+
+    #[test]
+    fn finds_models_in_macos_app_resources() {
+        let root = std::env::temp_dir().join(format!(
+            "ticketchan-model-path-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let executable_dir = root.join("发票酱.app/Contents/MacOS");
+        let model_dir = root.join("发票酱.app/Contents/Resources/models");
+        let development = root.join("missing-development-models");
+        write_fake_models(&model_dir);
+
+        let resolved = resolve_invoice_ocr_model_dir_from(&development, Some(&executable_dir));
+
+        assert_eq!(resolved.unwrap(), model_dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keeps_portable_models_next_to_executable() {
+        let root = std::env::temp_dir().join(format!(
+            "ticketchan-portable-model-path-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let executable_dir = root.join("bin");
+        let model_dir = executable_dir.join("models");
+        let development = root.join("missing-development-models");
+        write_fake_models(&model_dir);
+
+        let resolved = resolve_invoice_ocr_model_dir_from(&development, Some(&executable_dir));
+
+        assert_eq!(resolved.unwrap(), model_dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

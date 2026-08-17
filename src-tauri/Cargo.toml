@@ -1,6 +1,6 @@
 [package]
 name = "ticketchan"
-version = "2.3.0"
+version = "2.3.1"
 description = "发票酱"
 authors = ["ticketchan"]
 license = "MIT"
@@ -9,7 +9,7 @@ rust-version = "1.77.2"
 
 [features]
 default = []
-ocr = ["ocr-rs", "invoice-extractor/paddle-ocr"]
+ocr = ["invoice-extractor/paddle-ocr"]
 
 [lib]
 name = "app_lib"
@@ -37,7 +37,6 @@ lopdf = "0.39"
 encoding_rs = "0.8"
 rayon = "1.10"
 kamadak-exif = "0.5"
-ocr-rs = { version = "2.2", optional = true }
 invoice-engine = { path = "invoice-engine" }
 invoice-extractor = { path = "invoice-extractor" }
 flate2 = "1.1.9"
