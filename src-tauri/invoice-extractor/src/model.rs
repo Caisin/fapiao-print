@@ -77,6 +77,21 @@ pub struct AmountValidation {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InvoiceLineItem {
+    pub project_name: String,
+    pub specification: String,
+    pub unit: String,
+    pub quantity: Option<f64>,
+    pub unit_price: Option<f64>,
+    pub amount: f64,
+    pub tax_rate: String,
+    pub tax_amount: f64,
+    pub amount_tax: f64,
+    pub is_discount: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InvoiceInfo {
     pub page_index: u32,
     pub source: String,
@@ -94,6 +109,8 @@ pub struct InvoiceInfo {
     pub tax_rate: String,
     pub amount_uppercase: String,
     pub invoice_clerk: String,
+    #[serde(default)]
+    pub line_items: Vec<InvoiceLineItem>,
     pub is_ticket: bool,
     pub is_non_tax: bool,
     pub amount_validation: Option<AmountValidation>,
@@ -132,6 +149,9 @@ impl InvoiceInfo {
         fill_string!(tax_rate);
         fill_string!(amount_uppercase);
         fill_string!(invoice_clerk);
+        if self.line_items.is_empty() {
+            self.line_items = other.line_items;
+        }
         if self.invoice_type.is_empty() || self.invoice_type == "unknown" {
             self.invoice_type = other.invoice_type;
         }

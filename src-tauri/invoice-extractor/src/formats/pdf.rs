@@ -1,6 +1,6 @@
 use crate::{RecognitionLine, RecognitionPage, RecognitionWord};
-use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
-use std::collections::{HashMap, HashSet};
+use lopdf::{dictionary, Dictionary, Document, Encoding, Object, ObjectId, Stream};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub(crate) struct PdfReadResult {
@@ -23,32 +23,43 @@ pub(crate) fn read_pdf_pages(path: &Path) -> Result<PdfReadResult, String> {
     for (page_number, page_id) in pages {
         let (mut text, warning) = extract_page_text(&document, page_number);
         warnings.extend(warning);
-        let (form_texts, form_warnings) = extract_form_texts(&document, page_id, page_number);
+        let (form_texts, form_lines, form_warnings) =
+            extract_form_texts(&document, page_id, page_number);
         warnings.extend(form_warnings);
-        let mut lines = Vec::new();
-        for form_text in form_texts {
-            if !form_text.text.trim().is_empty() && !text.contains(form_text.text.trim()) {
-                if !text.ends_with('\n') {
-                    text.push('\n');
+        let mut positioned_words = extract_page_words(&document, page_id);
+        positioned_words.extend(form_lines.into_iter().flat_map(|line| line.words));
+        let mut lines = group_positioned_words(positioned_words);
+        if lines.is_empty() {
+            for form_text in form_texts {
+                if !form_text.text.trim().is_empty() && !text.contains(form_text.text.trim()) {
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push_str(&form_text.text);
                 }
-                text.push_str(&form_text.text);
+                for value in form_text
+                    .text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                {
+                    lines.push(RecognitionLine {
+                        words: vec![RecognitionWord {
+                            text: value.to_string(),
+                            x: form_text.x,
+                            y: form_text.y,
+                            w: 0.0,
+                            h: 0.0,
+                        }],
+                        confidence: 1.0,
+                    });
+                }
             }
-            for value in form_text
-                .text
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-            {
-                lines.push(RecognitionLine {
-                    words: vec![RecognitionWord {
-                        text: value.to_string(),
-                        x: form_text.x,
-                        y: form_text.y,
-                        w: 0.0,
-                        h: 0.0,
-                    }],
-                    confidence: 1.0,
-                });
+        }
+        if !lines.is_empty() {
+            let positioned_text = recognition_lines_text(&lines);
+            if !positioned_text.trim().is_empty() {
+                text = positioned_text;
             }
         }
         let (img_w, img_h) = page_dimensions(&document, page_id).unwrap_or((0, 0));
@@ -68,8 +79,7 @@ pub(crate) fn read_pdf_pages(path: &Path) -> Result<PdfReadResult, String> {
 struct FormPage {
     content: Vec<u8>,
     resources: Object,
-    x: f64,
-    y: f64,
+    matrix: [f64; 6],
 }
 
 struct FormText {
@@ -82,12 +92,12 @@ fn extract_form_texts(
     document: &Document,
     page_id: ObjectId,
     page_number: u32,
-) -> (Vec<FormText>, Vec<String>) {
+) -> (Vec<FormText>, Vec<RecognitionLine>, Vec<String>) {
     let Some(page_resources) = inherited_page_resources(document, page_id) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
     let Ok(page_content) = document.get_and_decode_page_content(page_id) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
     let mut forms = Vec::new();
     collect_form_pages(
@@ -100,9 +110,16 @@ fn extract_form_texts(
     );
 
     let mut texts = Vec::with_capacity(forms.len());
+    let mut words = Vec::new();
     let mut warnings = Vec::new();
     for (index, form) in forms.into_iter().enumerate() {
-        let position = (form.x, form.y);
+        let positioned =
+            extract_positioned_words(document, &form.content, &form.resources, form.matrix);
+        if !positioned.is_empty() {
+            words.extend(positioned);
+            continue;
+        }
+        let position = (form.matrix[4], form.matrix[5]);
         match extract_form_text(document, page_id, page_number, form) {
             Ok(text) if !text.trim().is_empty() => texts.push(FormText {
                 text,
@@ -116,7 +133,7 @@ fn extract_form_texts(
             )),
         }
     }
-    (texts, warnings)
+    (texts, group_positioned_words(words), warnings)
 }
 
 fn inherited_page_resources(document: &Document, page_id: ObjectId) -> Option<Object> {
@@ -210,8 +227,7 @@ fn collect_form_pages(
                 forms.push(FormPage {
                     content: content.clone(),
                     resources: form_resources.clone(),
-                    x: form_position[4],
-                    y: form_position[5],
+                    matrix: form_position,
                 });
                 if let Ok(form_content) = lopdf::content::Content::decode(&content) {
                     collect_form_pages(
@@ -241,6 +257,203 @@ fn object_matrix(object: &Object) -> Option<[f64; 6]> {
             values[0], values[1], values[2], values[3], values[4], values[5],
         ]
     })
+}
+
+fn extract_page_words(document: &Document, page_id: ObjectId) -> Vec<RecognitionWord> {
+    let Some(resources) = inherited_page_resources(document, page_id) else {
+        return Vec::new();
+    };
+    let Ok(content) = document.get_page_content(page_id) else {
+        return Vec::new();
+    };
+    extract_positioned_words(
+        document,
+        &content,
+        &resources,
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    )
+}
+
+fn extract_positioned_words(
+    document: &Document,
+    content_bytes: &[u8],
+    resources: &Object,
+    matrix: [f64; 6],
+) -> Vec<RecognitionWord> {
+    let encodings = form_encodings(document, resources);
+    let Ok(content) = lopdf::content::Content::decode(content_bytes) else {
+        return Vec::new();
+    };
+    let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut text_matrix = identity;
+    let mut current_font = None::<Vec<u8>>;
+    let mut leading = 0.0;
+    let mut words = Vec::new();
+
+    for operation in content.operations {
+        match operation.operator.as_str() {
+            "BT" => text_matrix = identity,
+            "Tf" => {
+                current_font = operation
+                    .operands
+                    .first()
+                    .and_then(|object| object.as_name().ok())
+                    .map(<[u8]>::to_vec);
+            }
+            "Tm" if operation.operands.len() == 6 => {
+                if let Some(matrix) = operation_matrix(&operation.operands) {
+                    text_matrix = matrix;
+                }
+            }
+            "Td" | "TD" if operation.operands.len() >= 2 => {
+                let x = operation
+                    .operands
+                    .first()
+                    .and_then(object_number)
+                    .unwrap_or(0.0);
+                let y = operation
+                    .operands
+                    .get(1)
+                    .and_then(object_number)
+                    .unwrap_or(0.0);
+                text_matrix[4] += x;
+                text_matrix[5] += y;
+                if operation.operator == "TD" {
+                    leading = -y;
+                }
+            }
+            "TL" => {
+                leading = operation
+                    .operands
+                    .first()
+                    .and_then(object_number)
+                    .unwrap_or(leading);
+            }
+            "T*" => text_matrix[5] -= leading,
+            "Tj" | "TJ" => {
+                let Some(encoding) = current_font.as_ref().and_then(|font| encodings.get(font))
+                else {
+                    continue;
+                };
+                let text = decode_text_operands(encoding, &operation.operands);
+                let text = text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let point = transform_point(matrix, text_matrix[4], text_matrix[5]);
+                words.push(RecognitionWord {
+                    text: text.to_string(),
+                    x: point.0,
+                    y: point.1,
+                    w: 0.0,
+                    h: 0.0,
+                });
+            }
+            _ => {}
+        }
+    }
+    words
+}
+
+fn form_encodings<'a>(
+    document: &'a Document,
+    resources: &'a Object,
+) -> BTreeMap<Vec<u8>, Encoding<'a>> {
+    let Some(resources) = resolve_dictionary(document, resources) else {
+        return BTreeMap::new();
+    };
+    let Ok(fonts) = resources.get(b"Font") else {
+        return BTreeMap::new();
+    };
+    let Some(fonts) = resolve_dictionary(document, fonts) else {
+        return BTreeMap::new();
+    };
+    fonts
+        .iter()
+        .filter_map(|(name, font)| {
+            resolve_dictionary(document, font)
+                .and_then(|font| font.get_font_encoding(document).ok())
+                .map(|encoding| (name.clone(), encoding))
+        })
+        .collect()
+}
+
+fn operation_matrix(operands: &[Object]) -> Option<[f64; 6]> {
+    let values = operands
+        .iter()
+        .take(6)
+        .map(object_number)
+        .collect::<Option<Vec<_>>>()?;
+    Some([
+        values[0], values[1], values[2], values[3], values[4], values[5],
+    ])
+}
+
+fn decode_text_operands(encoding: &Encoding<'_>, operands: &[Object]) -> String {
+    let mut text = String::new();
+    for operand in operands {
+        match operand {
+            Object::String(bytes, _) => {
+                if let Ok(value) = Document::decode_text(encoding, bytes) {
+                    text.push_str(&value);
+                }
+            }
+            Object::Array(values) => {
+                text.push_str(&decode_text_operands(encoding, values));
+            }
+            Object::Integer(spacing) if *spacing < -100 => text.push(' '),
+            Object::Real(spacing) if *spacing < -100.0 => text.push(' '),
+            _ => {}
+        }
+    }
+    text
+}
+
+fn transform_point(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
+    (
+        matrix[0] * x + matrix[2] * y + matrix[4],
+        matrix[1] * x + matrix[3] * y + matrix[5],
+    )
+}
+
+fn group_positioned_words(mut words: Vec<RecognitionWord>) -> Vec<RecognitionLine> {
+    words.sort_by(|left, right| {
+        right
+            .y
+            .total_cmp(&left.y)
+            .then_with(|| left.x.total_cmp(&right.x))
+    });
+    let mut lines = Vec::<RecognitionLine>::new();
+    for word in words {
+        let line = lines
+            .iter_mut()
+            .find(|line| (line.words[0].y - word.y).abs() <= 2.0);
+        if let Some(line) = line {
+            line.words.push(word);
+            line.words.sort_by(|left, right| left.x.total_cmp(&right.x));
+        } else {
+            lines.push(RecognitionLine {
+                words: vec![word],
+                confidence: 1.0,
+            });
+        }
+    }
+    lines.sort_by(|left, right| right.words[0].y.total_cmp(&left.words[0].y));
+    lines
+}
+
+fn recognition_lines_text(lines: &[RecognitionLine]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            line.words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn object_number(object: &Object) -> Option<f64> {
@@ -516,7 +729,8 @@ mod tests {
         let positions = result.pages[0]
             .lines
             .iter()
-            .map(|line| (line.words[0].text.as_str(), line.words[0].x))
+            .flat_map(|line| &line.words)
+            .map(|word| (word.text.as_str(), word.x))
             .collect::<std::collections::HashMap<_, _>>();
         assert_eq!(positions.get("LEFT_VALUE"), Some(&50.0));
         assert_eq!(positions.get("RIGHT_VALUE"), Some(&350.0));

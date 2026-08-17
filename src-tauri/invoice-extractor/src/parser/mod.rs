@@ -1,5 +1,6 @@
 mod amounts;
 mod fields;
+mod items;
 mod normalize;
 
 use crate::{AmountValidation, InvoiceInfo, RecognitionPage};
@@ -60,6 +61,7 @@ pub(crate) fn parse_recognition_page(
         tax_rate: amounts.tax_rate,
         amount_uppercase: amounts.amount_uppercase,
         invoice_clerk: identity.invoice_clerk,
+        line_items: items::extract_line_items(page),
         is_ticket: identity.is_ticket,
         is_non_tax: identity.is_non_tax,
         amount_validation: validation,

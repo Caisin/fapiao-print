@@ -170,6 +170,7 @@ impl<B: OcrBackend> InvoiceExtractor<B> {
             }
             invoices.push(info);
         }
+        harmonize_multi_page_invoices(&mut invoices);
         Ok(invoices)
     }
 
@@ -191,6 +192,44 @@ impl<B: OcrBackend> InvoiceExtractor<B> {
             "ocr",
             options.include_raw_text,
         ))
+    }
+}
+
+fn harmonize_multi_page_invoices(invoices: &mut [InvoiceInfo]) {
+    let mut groups = std::collections::BTreeMap::<String, Vec<usize>>::new();
+    for (index, invoice) in invoices.iter().enumerate() {
+        if !invoice.invoice_no.is_empty() {
+            groups
+                .entry(invoice.invoice_no.clone())
+                .or_default()
+                .push(index);
+        }
+    }
+    for indices in groups.values().filter(|indices| indices.len() > 1) {
+        let Some(canonical_index) = indices.iter().copied().max_by(|left, right| {
+            let left = &invoices[*left];
+            let right = &invoices[*right];
+            (!left.amount_uppercase.is_empty(), left.amount_tax)
+                .partial_cmp(&(!right.amount_uppercase.is_empty(), right.amount_tax))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
+            continue;
+        };
+        let canonical = invoices[canonical_index].clone();
+        for index in indices {
+            let invoice = &mut invoices[*index];
+            invoice.amount = canonical.amount;
+            invoice.amount_tax = canonical.amount_tax;
+            invoice.amount_no_tax = canonical.amount_no_tax;
+            invoice.tax_amount = canonical.tax_amount;
+            invoice.tax_rate.clone_from(&canonical.tax_rate);
+            invoice
+                .amount_uppercase
+                .clone_from(&canonical.amount_uppercase);
+            invoice
+                .amount_validation
+                .clone_from(&canonical.amount_validation);
+        }
     }
 }
 
@@ -345,6 +384,35 @@ mod tests {
             invoice_number_from_file_name(path).as_deref(),
             Some("26437000000232262330")
         );
+    }
+
+    #[test]
+    fn harmonizes_final_totals_across_pages_of_the_same_invoice() {
+        let mut invoices = vec![
+            InvoiceInfo {
+                invoice_no: "26432000001658975131".to_string(),
+                amount: 69.73,
+                amount_tax: 69.73,
+                ..Default::default()
+            },
+            InvoiceInfo {
+                invoice_no: "26432000001658975131".to_string(),
+                amount: 78.8,
+                amount_tax: 78.8,
+                amount_no_tax: 69.73,
+                tax_amount: 9.07,
+                tax_rate: "13%".to_string(),
+                amount_uppercase: "柒拾捌圆捌角整".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        harmonize_multi_page_invoices(&mut invoices);
+
+        assert_eq!(invoices[0].amount_tax, 78.8);
+        assert_eq!(invoices[0].amount_no_tax, 69.73);
+        assert_eq!(invoices[0].tax_amount, 9.07);
+        assert_eq!(invoices[0].amount_uppercase, "柒拾捌圆捌角整");
     }
 
     #[test]

@@ -12,7 +12,8 @@ pub use backend::{NoOcr, OcrBackend};
 pub use extractor::{extract_directory, extract_file, InvoiceExtractor};
 pub use model::{
     AmountValidation, DirectoryExtractionError, ExtractionOptions, InvoiceDirectoryResult,
-    InvoiceFileResult, InvoiceInfo, RecognitionLine, RecognitionPage, RecognitionWord,
+    InvoiceFileResult, InvoiceInfo, InvoiceLineItem, RecognitionLine, RecognitionPage,
+    RecognitionWord,
 };
 #[cfg(feature = "paddle-ocr")]
 pub use native_pdf::NativePdfRenderer;

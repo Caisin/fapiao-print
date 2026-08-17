@@ -43,6 +43,27 @@ for invoice in &result.invoices {
 `amount_tax = amount_no_tax + tax_amount`、无需校验的票种或已自动修复时均为
 `null`。因此 `null` 表示“没有未解决的金额异常”，不是“未执行解析”。
 
+带坐标文字层的 PDF 还会返回 `line_items`（JSON 为 `lineItems`）商品明细：
+
+```json
+{
+  "projectName": "*其他食品*素牛筋20g",
+  "specification": "11011771",
+  "unit": "个",
+  "quantity": 2.0,
+  "unitPrice": 0.885,
+  "amount": 1.77,
+  "taxRate": "13%",
+  "taxAmount": 0.23,
+  "amountTax": 2.0,
+  "isDiscount": false
+}
+```
+
+折扣行同样保留为独立明细，`isDiscount` 为 `true`；票面未提供的规格、单位、
+数量和单价分别返回空字符串或 `null`。多页同一发票会按发票号码同步最终汇总
+金额，明细仍归属其实际出现的页面。
+
 可直接运行仓库示例：
 
 ```bash

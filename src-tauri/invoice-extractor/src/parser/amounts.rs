@@ -12,7 +12,7 @@ pub(crate) struct Amounts {
 }
 
 pub(crate) fn extract_amounts(text: &str, is_ticket: bool, is_non_tax: bool) -> Amounts {
-    let compact_text = compact(text);
+    let compact_text = text.lines().map(compact).collect::<Vec<_>>().join("\n");
     let all = collect_amounts(&compact_text);
     let mut result = Amounts {
         amount_tax: first_amount_after(
@@ -196,12 +196,21 @@ fn collect_amounts(text: &str) -> Vec<f64> {
     let mut values = regex
         .captures_iter(text)
         .filter_map(|captures| captures.get(1))
+        .filter(|value| has_decimal_boundaries(text, value.start(), value.end()))
         .filter_map(|value| value.as_str().replace(',', "").parse::<f64>().ok())
         .filter(|value| *value > 0.0 && *value < 1_000_000_000.0)
         .map(round_money)
         .collect::<Vec<_>>();
     values.dedup_by(|left, right| (*left - *right).abs() < 0.001);
     values
+}
+
+fn has_decimal_boundaries(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before
+        .is_some_and(|character| character.is_ascii_digit() || character == '.' || character == '-')
+        && !after.is_some_and(|character| character.is_ascii_digit() || character == '.')
 }
 
 fn fill_by_math(result: &mut Amounts, values: &[f64]) {
@@ -230,16 +239,25 @@ fn fill_by_math(result: &mut Amounts, values: &[f64]) {
 
 fn extract_chinese_total_text(text: &str) -> String {
     let regex = match Regex::new(
-        r"(?:价税合计|金额合计)?.{0,10}(?:大写)?[):：）]?([零壹贰叁肆伍陆柒捌玖拾佰仟万亿萬億圆元角分整正一二三四五六七八九十]{3,})",
+        r"[零壹贰叁肆伍陆柒捌玖拾佰仟万亿萬億圆元角分整正一二三四五六七八九十]{3,}",
     ) {
         Ok(regex) => regex,
         Err(_) => return String::new(),
     };
-    regex
-        .captures(text)
-        .and_then(|captures| captures.get(1))
-        .map(|value| value.as_str().to_string())
-        .unwrap_or_default()
+    for label in [
+        "价税合计(大写)",
+        "价税合计（大写）",
+        "金额合计(大写)",
+        "金额合计（大写）",
+    ] {
+        if let Some(index) = text.find(label) {
+            let tail = &text[index + label.len()..];
+            if let Some(value) = regex.find(&tail.chars().take(80).collect::<String>()) {
+                return value.as_str().to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 fn parse_chinese_number(input: &str) -> f64 {
