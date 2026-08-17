@@ -71,7 +71,9 @@ fn show_error_dialog(message: &str) {
         );
     }
 }
-use pdf_engine::{PrinterInfo, FileData, RenderedPage, ComGuard, LayoutRenderRequest, PdfTextResult};
+use pdf_engine::{PrinterInfo, FileData, RenderedPage, LayoutRenderRequest, PdfTextResult};
+#[cfg(target_os = "windows")]
+use pdf_engine::ComGuard;
 #[cfg(feature = "ocr")]
 use pdf_engine::{OcrResult, RenderedOcrPage};
 
@@ -189,11 +191,7 @@ fn render_and_ocr_pdf(pdf_path: String, dpi: Option<u32>, ocr_precision: Option<
 /// Open a file with the default application (for auto-opening saved PDFs)
 #[command]
 fn open_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        shell_execute("open", &path)?;
-    }
-    Ok(())
+    open_with_system(&path)
 }
 
 /// Check whether a path exists and whether it's a directory
@@ -305,11 +303,7 @@ async fn write_text_file(path: String, content: String) -> Result<serde_json::Va
 /// Open a URL in the default browser
 #[command]
 fn open_url(url: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        shell_execute("open", &url)?;
-    }
-    Ok(())
+    open_with_system(&url)
 }
 
 /// OCR an image from base64 data URL or file path, return structured result with text + word coordinates.
@@ -604,6 +598,7 @@ async fn generate_pdf_from_layout(
     });
 
     let output_for_print = output.clone();
+    #[cfg(target_os = "windows")]
     let print_settings = (
         request.settings.copies,
         request.settings.duplex,
@@ -626,7 +621,12 @@ async fn generate_pdf_from_layout(
     #[cfg(target_os = "windows")]
     let mut shell_fallback_open = false;
     #[cfg(not(target_os = "windows"))]
-    let shell_fallback_open = false;
+    let shell_fallback_open = if should_print {
+        open_with_system(&output_for_print.to_string_lossy())?;
+        is_direct
+    } else {
+        false
+    };
     #[cfg(target_os = "windows")]
     if should_print {
         if is_direct {
@@ -657,7 +657,6 @@ async fn generate_pdf_from_layout(
             shell_execute("open", &output_for_print.to_string_lossy())?;
         }
     }
-
     let msg = if !should_print {
         "PDF已生成".to_string()
     } else if shell_fallback_open {
@@ -698,7 +697,10 @@ fn print_pdf_file(
     #[cfg(target_os = "windows")]
     let mut shell_fallback_open = false;
     #[cfg(not(target_os = "windows"))]
-    let shell_fallback_open = false;
+    let shell_fallback_open = {
+        open_with_system(&output.to_string_lossy())?;
+        is_direct
+    };
     #[cfg(target_os = "windows")]
     {
         if is_direct {
@@ -710,7 +712,6 @@ fn print_pdf_file(
             shell_execute("open", &output.to_string_lossy())?;
         }
     }
-
     let msg = if shell_fallback_open {
         "PDF阅读器不支持静默打印，已打开PDF，请手动打印".to_string()
     } else if is_direct {
@@ -1189,6 +1190,31 @@ fn sumatrapdf_print(
 // =====================================================
 // Helpers
 // =====================================================
+
+fn open_with_system(target: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        return shell_execute("open", target);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::process::Command::new("open")
+            .arg(target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("无法打开 '{}': {}", target, e));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("无法打开 '{}': {}", target, e));
+    }
+    #[allow(unreachable_code)]
+    Err("当前系统不支持打开文件或链接".to_string())
+}
 
 /// Call Windows ShellExecuteW — no cmd.exe, no terminal window
 #[cfg(target_os = "windows")]

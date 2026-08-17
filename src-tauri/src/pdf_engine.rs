@@ -17,6 +17,7 @@ pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 // COM RAII Guard — ensures CoUninitialize is called on drop
 // =====================================================
 
+#[cfg(target_os = "windows")]
 pub(crate) struct ComGuard;
 
 #[cfg(target_os = "windows")]
@@ -28,13 +29,6 @@ impl ComGuard {
                 windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
             );
         }
-        ComGuard
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-impl ComGuard {
-    pub(crate) fn init() -> Self {
         ComGuard
     }
 }
@@ -408,6 +402,355 @@ pub(crate) fn render_pdf_pages(pdf_path: &str, dpi: u32, use_jpeg: bool) -> Resu
     Ok(results)
 }
 
+/// Render PDF pages with macOS Core Graphics.
+///
+/// Core Graphics is part of macOS, so development builds do not need a
+/// separately downloaded PDFium library. The output contract intentionally
+/// matches the WinRT renderer used on Windows.
+#[cfg(target_os = "macos")]
+pub(crate) fn render_pdf_pages(pdf_path: &str, dpi: u32, use_jpeg: bool) -> Result<Vec<RenderedPage>, String> {
+    macos_pdf::render_pdf_pages(pdf_path, dpi, use_jpeg)
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+pub(crate) fn render_pdf_pages(_pdf_path: &str, _dpi: u32, _use_jpeg: bool) -> Result<Vec<RenderedPage>, String> {
+    Err("当前系统暂不支持原生 PDF 预览".to_string())
+}
+
+#[cfg(target_os = "macos")]
+mod macos_pdf {
+    use super::{RenderedPage, SHUTTING_DOWN};
+    use base64::Engine;
+    use std::ffi::c_void;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::atomic::Ordering;
+
+    type CGFloat = f64;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGPoint {
+        x: CGFloat,
+        y: CGFloat,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGSize {
+        width: CGFloat,
+        height: CGFloat,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGAffineTransform {
+        a: CGFloat,
+        b: CGFloat,
+        c: CGFloat,
+        d: CGFloat,
+        tx: CGFloat,
+        ty: CGFloat,
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFURLCreateFromFileSystemRepresentation(
+            allocator: *const c_void,
+            buffer: *const u8,
+            buffer_length: isize,
+            is_directory: u8,
+        ) -> *mut c_void;
+        fn CFRelease(value: *const c_void);
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPDFDocumentCreateWithURL(url: *const c_void) -> *mut c_void;
+        fn CGPDFDocumentGetNumberOfPages(document: *const c_void) -> usize;
+        fn CGPDFDocumentGetPage(document: *const c_void, page_number: usize) -> *mut c_void;
+        fn CGPDFPageGetBoxRect(page: *const c_void, box_type: i32) -> CGRect;
+        fn CGPDFPageGetRotationAngle(page: *const c_void) -> i32;
+        fn CGPDFPageGetDrawingTransform(
+            page: *const c_void,
+            box_type: i32,
+            rect: CGRect,
+            rotate: i32,
+            preserve_aspect_ratio: bool,
+        ) -> CGAffineTransform;
+        fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
+        fn CGBitmapContextCreate(
+            data: *mut c_void,
+            width: usize,
+            height: usize,
+            bits_per_component: usize,
+            bytes_per_row: usize,
+            color_space: *const c_void,
+            bitmap_info: u32,
+        ) -> *mut c_void;
+        fn CGContextSetRGBFillColor(
+            context: *const c_void,
+            red: CGFloat,
+            green: CGFloat,
+            blue: CGFloat,
+            alpha: CGFloat,
+        );
+        fn CGContextFillRect(context: *const c_void, rect: CGRect);
+        fn CGContextConcatCTM(context: *const c_void, transform: CGAffineTransform);
+        fn CGContextDrawPDFPage(context: *const c_void, page: *const c_void);
+    }
+
+    const MEDIA_BOX: i32 = 0;
+    const CROP_BOX: i32 = 1;
+    const ALPHA_PREMULTIPLIED_LAST: u32 = 1;
+
+    struct CfHandle(*mut c_void);
+
+    impl CfHandle {
+        fn new(ptr: *mut c_void, error: &str) -> Result<Self, String> {
+            if ptr.is_null() {
+                Err(error.to_string())
+            } else {
+                Ok(Self(ptr))
+            }
+        }
+    }
+
+    impl Drop for CfHandle {
+        fn drop(&mut self) {
+            unsafe { CFRelease(self.0) };
+        }
+    }
+
+    pub(super) fn render_pdf_pages(
+        pdf_path: &str,
+        dpi: u32,
+        use_jpeg: bool,
+    ) -> Result<Vec<RenderedPage>, String> {
+        if SHUTTING_DOWN.load(Ordering::SeqCst) {
+            return Err("应用正在关闭".to_string());
+        }
+        if dpi == 0 {
+            return Err("PDF 渲染 DPI 必须大于 0".to_string());
+        }
+
+        let path = std::path::Path::new(pdf_path);
+        let path_bytes = path.as_os_str().as_bytes();
+        let url = CfHandle::new(
+            unsafe {
+                CFURLCreateFromFileSystemRepresentation(
+                    std::ptr::null(),
+                    path_bytes.as_ptr(),
+                    path_bytes.len() as isize,
+                    0,
+                )
+            },
+            "无法创建 PDF 文件 URL",
+        )?;
+        let document = CfHandle::new(
+            unsafe { CGPDFDocumentCreateWithURL(url.0) },
+            "加载 PDF 失败（文件可能受密码保护或已损坏）",
+        )?;
+        let color_space = CfHandle::new(
+            unsafe { CGColorSpaceCreateDeviceRGB() },
+            "无法创建 RGB 色彩空间",
+        )?;
+
+        let page_count = unsafe { CGPDFDocumentGetNumberOfPages(document.0) };
+        if page_count == 0 {
+            return Err("PDF 不包含可渲染页面".to_string());
+        }
+
+        log::info!(
+            "Core Graphics PDF rendering: {} pages, dpi={}, jpeg={}",
+            page_count,
+            dpi,
+            use_jpeg
+        );
+        let mut results = Vec::with_capacity(page_count);
+        let pixel_scale = dpi as f64 / 72.0;
+
+        for page_index in 0..page_count {
+            if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                return Err("应用正在关闭，渲染已中止".to_string());
+            }
+
+            let page = unsafe { CGPDFDocumentGetPage(document.0, page_index + 1) };
+            if page.is_null() {
+                return Err(format!("获取第{}页失败", page_index + 1));
+            }
+
+            let mut page_box = unsafe { CGPDFPageGetBoxRect(page, CROP_BOX) };
+            if page_box.size.width <= 0.0 || page_box.size.height <= 0.0 {
+                page_box = unsafe { CGPDFPageGetBoxRect(page, MEDIA_BOX) };
+            }
+            if !page_box.size.width.is_finite()
+                || !page_box.size.height.is_finite()
+                || page_box.size.width <= 0.0
+                || page_box.size.height <= 0.0
+            {
+                return Err(format!("第{}页尺寸无效", page_index + 1));
+            }
+
+            let rotation = unsafe { CGPDFPageGetRotationAngle(page) }.rem_euclid(360);
+            let (point_width, point_height) = if rotation == 90 || rotation == 270 {
+                (page_box.size.height, page_box.size.width)
+            } else {
+                (page_box.size.width, page_box.size.height)
+            };
+            let width = (point_width * pixel_scale).round().max(1.0) as u32;
+            let height = (point_height * pixel_scale).round().max(1.0) as u32;
+            let bytes_per_row = width as usize * 4;
+            let buffer_len = bytes_per_row
+                .checked_mul(height as usize)
+                .ok_or_else(|| format!("第{}页尺寸过大", page_index + 1))?;
+            let mut pixels = vec![255u8; buffer_len];
+
+            let context = CfHandle::new(
+                unsafe {
+                    CGBitmapContextCreate(
+                        pixels.as_mut_ptr().cast(),
+                        width as usize,
+                        height as usize,
+                        8,
+                        bytes_per_row,
+                        color_space.0,
+                        ALPHA_PREMULTIPLIED_LAST,
+                    )
+                },
+                &format!("创建第{}页位图失败", page_index + 1),
+            )?;
+            let target = CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize {
+                    width: width as f64,
+                    height: height as f64,
+                },
+            };
+            unsafe {
+                CGContextSetRGBFillColor(context.0, 1.0, 1.0, 1.0, 1.0);
+                CGContextFillRect(context.0, target);
+                let transform = CGPDFPageGetDrawingTransform(page, CROP_BOX, target, 0, true);
+                CGContextConcatCTM(context.0, transform);
+                CGContextDrawPDFPage(context.0, page);
+            }
+            drop(context);
+
+            let image = image::RgbaImage::from_raw(width, height, pixels)
+                .ok_or_else(|| format!("读取第{}页位图失败", page_index + 1))?;
+            let dynamic = image::DynamicImage::ImageRgba8(image);
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            let (mime, format) = if use_jpeg {
+                dynamic
+                    .write_to(&mut encoded, image::ImageFormat::Jpeg)
+                    .map_err(|e| format!("编码第{}页 JPEG 失败: {}", page_index + 1, e))?;
+                ("image/jpeg", "jpeg")
+            } else {
+                dynamic
+                    .write_to(&mut encoded, image::ImageFormat::Png)
+                    .map_err(|e| format!("编码第{}页 PNG 失败: {}", page_index + 1, e))?;
+                ("image/png", "png")
+            };
+            let b64 = base64::engine::general_purpose::STANDARD.encode(encoded.into_inner());
+
+            results.push(RenderedPage {
+                index: page_index as u32,
+                image_data_url: format!("data:{};base64,{}", mime, b64),
+                width,
+                height,
+                render_dpi: dpi,
+                format: format.to_string(),
+            });
+        }
+
+        Ok(results)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use lopdf::{dictionary, content::Content, content::Operation, Document, Object, Stream};
+
+        #[test]
+        fn renders_pdf_with_top_down_image_orientation() {
+            let mut document = Document::with_version("1.5");
+            let pages_id = document.new_object_id();
+            let operations = vec![
+                Operation::new("rg", vec![1.into(), 0.into(), 0.into()]),
+                Operation::new("re", vec![0.into(), 100.into(), 100.into(), 100.into()]),
+                Operation::new("f", vec![]),
+                Operation::new("rg", vec![0.into(), 0.into(), 1.into()]),
+                Operation::new("re", vec![0.into(), 0.into(), 100.into(), 100.into()]),
+                Operation::new("f", vec![]),
+            ];
+            let content = Content { operations }.encode().unwrap();
+            let content_id = document.add_object(Stream::new(dictionary! {}, content));
+            let page_id = document.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 100.into(), 200.into()],
+                "Resources" => dictionary! {},
+                "Contents" => content_id,
+            });
+            document.objects.insert(
+                pages_id,
+                Object::Dictionary(dictionary! {
+                    "Type" => "Pages",
+                    "Kids" => vec![page_id.into()],
+                    "Count" => 1,
+                }),
+            );
+            let catalog_id = document.add_object(dictionary! {
+                "Type" => "Catalog",
+                "Pages" => pages_id,
+            });
+            document.trailer.set("Root", catalog_id);
+
+            let path = std::env::temp_dir().join(format!(
+                "ticketchan-core-graphics-{}.pdf",
+                std::process::id()
+            ));
+            document.save(&path).unwrap();
+
+            let pages = render_pdf_pages(path.to_str().unwrap(), 72, false).unwrap();
+            assert_eq!(pages.len(), 1);
+            assert_eq!((pages[0].width, pages[0].height), (100, 200));
+
+            let encoded = pages[0]
+                .image_data_url
+                .strip_prefix("data:image/png;base64,")
+                .unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            let top = image.get_pixel(50, 25);
+            let bottom = image.get_pixel(50, 175);
+            assert!(top[0] > 240 && top[2] < 15, "top pixel: {:?}", top);
+            assert!(bottom[2] > 240 && bottom[0] < 15, "bottom pixel: {:?}", bottom);
+
+            let jpeg_pages = render_pdf_pages(path.to_str().unwrap(), 72, true).unwrap();
+            let _ = std::fs::remove_file(path);
+            let jpeg = jpeg_pages[0]
+                .image_data_url
+                .strip_prefix("data:image/jpeg;base64,")
+                .unwrap();
+            let jpeg_bytes = base64::engine::general_purpose::STANDARD
+                .decode(jpeg)
+                .unwrap();
+            let jpeg_image = image::load_from_memory(&jpeg_bytes).unwrap();
+            assert_eq!((jpeg_image.width(), jpeg_image.height()), (100, 200));
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 pub(crate) fn render_pdf_pages_pdfium(pdf_path: &str, dpi: u32, use_jpeg: bool) -> Result<Vec<RenderedPage>, String> {
     if SHUTTING_DOWN.load(Ordering::SeqCst) {
         return Err("应用正在关闭".to_string());
@@ -455,6 +798,17 @@ pub(crate) fn render_pdf_pages_pdfium(pdf_path: &str, dpi: u32, use_jpeg: bool) 
     Ok(results)
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn render_pdf_pages_pdfium(pdf_path: &str, dpi: u32, use_jpeg: bool) -> Result<Vec<RenderedPage>, String> {
+    render_pdf_pages(pdf_path, dpi, use_jpeg)
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+pub(crate) fn render_pdf_pages_pdfium(_pdf_path: &str, _dpi: u32, _use_jpeg: bool) -> Result<Vec<RenderedPage>, String> {
+    Err("PDFium 渲染仅支持 Windows，当前系统也没有可用的原生 PDF 渲染器".to_string())
+}
+
+#[cfg(target_os = "windows")]
 fn convert_png_data_url_to_jpeg(data_url: &str) -> Result<(String, String), String> {
     use base64::Engine;
     if !data_url.starts_with("data:image/png;base64,") {
@@ -474,6 +828,7 @@ fn convert_png_data_url_to_jpeg(data_url: &str) -> Result<(String, String), Stri
     Ok((format!("data:image/jpeg;base64,{}", b64), "jpeg".to_string()))
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn check_winrt_pdf_available() -> bool {
     use windows::core::HSTRING;
     use windows::Storage::StorageFile;
@@ -513,6 +868,16 @@ pub(crate) fn check_winrt_pdf_available() -> bool {
             false
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn check_winrt_pdf_available() -> bool {
+    true
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+pub(crate) fn check_winrt_pdf_available() -> bool {
+    false
 }
 
 /// Render a single PDF page and run OCR on it — zero IPC round-trip for OCR.

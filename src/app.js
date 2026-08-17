@@ -6,9 +6,10 @@
 // Detect Tauri — use var to avoid conflict with Tauri's injected scripts
 var isTauri = window.__TAURI_INTERNALS__ !== undefined;
 var invoke  = isTauri ? window.__TAURI_INTERNALS__.invoke : null;
+var isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 var hasOcr  = false; // Set to true at startup if OCR feature is available
 var APP_VERSION = ''; // Filled at startup from Rust get_app_version()
-var _winrtPdfAvailable = true; // Set to false at startup if WinRT PDF component is missing
+var _winrtPdfAvailable = true; // Also represents the native Core Graphics renderer on macOS
 
 // =====================================================
 // Constants
@@ -1254,7 +1255,7 @@ function loadFileFromDataUrlFast(fd) {
     if (ext === 'pdf') {
       if (isTauri && invoke && filePath) {
         var renderFn = _winrtPdfAvailable ? 'render_pdf_pages' : 'render_pdf_pages_pdfium';
-        var renderLabel = _winrtPdfAvailable ? 'WinRT' : 'PDFium';
+        var renderLabel = _winrtPdfAvailable ? (isMacOS ? 'Core Graphics' : 'WinRT') : 'PDFium';
         invoke(renderFn, { pdfPath: filePath, dpi: PDF_PREVIEW_DPI, useJpeg: true }).then(async function(pages) {
           if (pages && pages.length > 0) {
             var results = buildPdfResults(pages, id, name, size, filePath);
@@ -2817,7 +2818,7 @@ function resetSettings() {
   document.getElementById('footerMarginRow').style.display = 'none';
   document.getElementById('footerMargin').value = 8; document.getElementById('footerMarginN').value = 8;
   document.getElementById('ocrPrecision').value = 'standard';
-  document.getElementById('printMode').value = 'pdfium';
+  document.getElementById('printMode').value = isMacOS ? 'pdf' : 'pdfium';
   document.getElementById('themeMode').value = 'light';
   document.documentElement.classList.remove('dark');
   try { localStorage.removeItem('ticketchan-theme'); } catch(e) {}
@@ -3084,6 +3085,18 @@ var _renameSeparator = '_';
 // Restore all layout & feature settings
 loadSettings();
 
+// PDFium and SumatraPDF are Windows-only. macOS uses Core Graphics for PDF
+// preview and opens the generated PDF in Preview for manual printing.
+if (isMacOS) {
+  var macPrintMode = document.getElementById('printMode');
+  if (macPrintMode) {
+    Array.prototype.forEach.call(macPrintMode.options, function(option) {
+      if (option.value !== 'pdf') option.hidden = true;
+    });
+    macPrintMode.value = 'pdf';
+  }
+}
+
 // =====================================================
 // Show main window after DOM is ready (window starts hidden via visible:false)
 // =====================================================
@@ -3104,7 +3117,7 @@ loadSettings();
       invoke('check_winrt_pdf').then(function(available) {
         _winrtPdfAvailable = !!available;
         if (!_winrtPdfAvailable) {
-          console.warn('[PDF] WinRT PDF 组件不可用，将使用 PDFium fallback');
+          console.warn('[PDF] 原生 PDF 组件不可用，将使用 PDFium fallback');
           invoke('check_pdfium_available').then(function(pdfiumAvail) {
             if (!pdfiumAvail) {
               showPdfiumMissing('当前系统的 PDF 组件不可用，需要下载 PDFium 渲染引擎才能加载 PDF 文件。');
