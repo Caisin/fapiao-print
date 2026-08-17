@@ -96,12 +96,12 @@ OFD（开放版式文档）是国家标准电子发票格式，本工具提供�
 
 | 文件 | 说明 |
 |------|------|
-| `发票酱_x64-setup.exe` | 轻量版安装包 |
-| `发票酱_x64_绿色版.exe` | 轻量版便携（单文件 exe，无需安装） |
-| `发票酱_x64_OCR版-setup.exe` | OCR 版安装包（含 PP-OCRv5） |
-| `发票酱_x64_OCR绿色版.zip` | OCR 版便携（exe + models/） |
-| `发票酱_*_macOS_Universal.dmg` | macOS 轻量版（Intel + Apple Silicon） |
-| `发票酱_*_macOS_Universal_OCR版.dmg` | macOS OCR 版（Intel + Apple Silicon） |
+| `fapiao-print_*_windows_x64-setup.exe` | Windows 轻量版安装包 |
+| `fapiao-print_*_windows_x64-portable.exe` | Windows 轻量版便携（单文件 exe） |
+| `fapiao-print_*_windows_x64_OCR-setup.exe` | Windows OCR 版安装包（含 PP-OCRv5） |
+| `fapiao-print_*_windows_x64_OCR-portable.zip` | Windows OCR 版便携（exe + models/） |
+| `fapiao-print_*_macOS_Universal.dmg` | macOS 轻量版（Intel + Apple Silicon） |
+| `fapiao-print_*_macOS_Universal_OCR.dmg` | macOS OCR 版（Intel + Apple Silicon） |
 
 > 💡 文字型 PDF / OFD 发票选轻量版即可自动提取金额和销售方信息；图片型 PDF 和图片需 OCR 版。
 

@@ -134,11 +134,29 @@ jobs:
             Write-Host "  $($_.Name)  ($sizeMB MB)"
           }
 
+      - name: Stage ASCII-safe release names
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force -Path release-dist | Out-Null
+          $files = @{
+            "fapiao-print_${version}_windows_x64-setup.exe" = (Get-ChildItem dist -Filter "*_${version}_x64-setup.exe" | Select-Object -First 1)
+            "fapiao-print_${version}_windows_x64-portable.exe" = (Get-ChildItem dist -Filter "*_${version}_x64_绿色版.exe" | Select-Object -First 1)
+            "fapiao-print_${version}_windows_x64_OCR-setup.exe" = (Get-ChildItem dist -Filter "*_${version}_x64_OCR版-setup.exe" | Select-Object -First 1)
+            "fapiao-print_${version}_windows_x64_OCR-portable.zip" = (Get-ChildItem dist -Filter "*_${version}_x64_OCR绿色版.zip" | Select-Object -First 1)
+          }
+          foreach ($entry in $files.GetEnumerator()) {
+            if ($null -eq $entry.Value) {
+              throw "未找到待发布产物: $($entry.Key)"
+            }
+            Copy-Item $entry.Value.FullName (Join-Path release-dist $entry.Key)
+          }
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-packages
-          path: dist/*
+          path: release-dist/*
           if-no-files-found: error
 
   build-macos:
@@ -186,13 +204,13 @@ jobs:
           npx tauri build --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
           light_dmg=$(find "$bundle_dir" -maxdepth 1 -type f -name '*.dmg' -print -quit)
           test -n "$light_dmg"
-          cp "$light_dmg" "dist/发票酱_${version}_macOS_Universal.dmg"
+          cp "$light_dmg" "dist/fapiao-print_${version}_macOS_Universal.dmg"
 
           rm -rf "$bundle_dir"
           npx tauri build --target universal-apple-darwin --features ocr --config src-tauri/tauri.macos.ocr.conf.json
           ocr_dmg=$(find "$bundle_dir" -maxdepth 1 -type f -name '*.dmg' -print -quit)
           test -n "$ocr_dmg"
-          cp "$ocr_dmg" "dist/发票酱_${version}_macOS_Universal_OCR版.dmg"
+          cp "$ocr_dmg" "dist/fapiao-print_${version}_macOS_Universal_OCR.dmg"
 
       - name: Verify macOS artifacts
         shell: bash
