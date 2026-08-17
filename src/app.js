@@ -1645,6 +1645,12 @@ function normalizeInvoiceNo(value) {
   return String(value || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
 }
 
+function warningRequiresInvoiceReview(warning) {
+  var message = String(warning || '').trim();
+  if (!message) return false;
+  return !/^已兼容修复\s+\d+\s+个非标准\s+ToUnicode\s+CMap$/i.test(message);
+}
+
 function getInvoiceSourceKey(fileObj) {
   return fileObj._pdfPath || fileObj._filePath || ('memory:' + String(fileObj.id || fileObj.name || ''));
 }
@@ -1707,6 +1713,7 @@ function mergeInvoicePageRecords(pageFiles, sourceKey, invoiceNo) {
     });
   });
   record._extractionWarnings = warnings;
+  var reviewWarnings = warnings.filter(warningRequiresInvoiceReview);
 
   var issues = [];
   if (pageFiles.some(function(fileObj) { return fileObj._extractionSuccess === false; })) issues.push('目录解析失败或信息不完整');
@@ -1714,7 +1721,7 @@ function mergeInvoicePageRecords(pageFiles, sourceKey, invoiceNo) {
   if (!(record.amountTax > 0 || record.amount > 0 || record.amountNoTax > 0)) issues.push('缺少金额');
   if (!record.invoiceDate) issues.push('缺少开票日期');
   if (!record.sellerName) issues.push('缺少销售方');
-  if (warnings.length > 0) issues.push('存在解析警告');
+  if (reviewWarnings.length > 0) issues.push('存在解析警告');
   record._parseIssues = issues;
   record._parseStatus = issues.length === 0
     ? 'ok'

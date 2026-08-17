@@ -216,7 +216,7 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
     lineItems: [
       { projectName: '服务费', amount: 47.17, taxAmount: 2.83 },
       { projectName: '服务费', amount: 47.17, taxAmount: 2.83 }
-    ], _extractionSuccess: true, _extractionWarnings: []
+    ], _extractionSuccess: true, _extractionWarnings: ['已兼容修复 7 个非标准 ToUnicode CMap']
   };
   const page2 = {
     id: 'a2', name: 'a_第2页.pdf', _pdfPath: '/tmp/a.pdf', invoiceNo: '', amountTax: 0,
@@ -235,10 +235,18 @@ vm.runInContext(source.slice(publicApiStart, publicApiEnd), context);
   const mergedPdf = records.find((record) => record._sourcePath === '/tmp/a.pdf');
   assert.equal(mergedPdf._pageCount, 2);
   assert.equal(mergedPdf.lineItems.length, 3, 'legitimate duplicate rows within one page must be preserved');
+  assert.equal(mergedPdf._parseStatus, 'ok', 'successful CMap compatibility repair must not require review');
+  assert.equal(mergedPdf._parseIssues.includes('存在解析警告'), false);
   assert.equal(records.filter((record) => record._duplicateInvoice).length, 2, 'same invoice number in different files must be marked duplicate');
   assert.equal(records.find((record) => record._sourcePath === '/tmp/c.pdf')._parseStatus, 'error');
   recordsContext.getInvoiceRecords([page1, page2], false);
   assert.equal(page1._duplicateInvoice, true, 'filtered summaries must not clear global duplicate flags');
+  const riskyWarningRecord = recordsContext.getInvoiceRecords([{
+    id: 'w1', name: 'warning.pdf', _pdfPath: '/tmp/warning.pdf', invoiceNo: '654321', invoiceDate: '2026-08-03',
+    sellerName: '销售方C', amountTax: 88, _extractionSuccess: true,
+    _extractionWarnings: ['PDF 第 1 页部分文字无法解码，已保留可识别内容']
+  }], false)[0];
+  assert.equal(riskyWarningRecord._parseStatus, 'review', 'partial text decoding warnings must still require review');
 
   context.S = { files: [page1, page2, duplicate, failed] };
   context.normalizeInvoiceNo = recordsContext.normalizeInvoiceNo;
